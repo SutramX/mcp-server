@@ -1,0 +1,37 @@
+{
+  "name": "@sutramx/mcp-server",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for SutramX uptime monitoring: lets AI agents and assistants manage monitors, incidents and status pages.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "sutramx-mcp-server": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "start:http": "node dist/index.js --http",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "express": "^5.2.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.0"
+  }
+}
