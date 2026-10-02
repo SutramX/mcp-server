@@ -6,6 +6,7 @@ import { registerAccountTools } from './tools/account.js';
 import { registerMonitorTools } from './tools/monitors.js';
 import { registerIncidentTools } from './tools/incidents.js';
 import { registerStatusPageTools } from './tools/statusPages.js';
+import { registerReliabilityTools } from './tools/reliability.js';
 
 /** One MCP server bound to one SutramX API key (one workspace). */
 export function createSutramXServer(client: SutramXClient, policy: ToolPolicy = DEFAULT_POLICY): McpServer {
@@ -29,5 +30,6 @@ export function createSutramXServer(client: SutramXClient, policy: ToolPolicy = 
     registerMonitorTools(server, client);
     registerIncidentTools(server, client);
     registerStatusPageTools(server, client);
+    registerReliabilityTools(server, client);
     return server;
 }

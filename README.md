@@ -26,6 +26,8 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_create_status_page` / `sutramx_update_status_page` | Create or edit a page | yes |
 | `sutramx_set_status_page_monitors` | Replace the monitors shown on a page | yes |
 | `sutramx_delete_status_page` | Delete a page (only with `SUTRAMX_ALLOW_DESTRUCTIVE`) | yes, destructive |
+| `sutramx_uptime_report` | Uptime %, incidents, MTTR and health score per monitor over 7/14/30/90 days, plus SLO error budgets and burn rates | no |
+| `sutramx_list_maintenance_windows` | Maintenance windows (scope, schedule, recurrence); filter by state | no |
 | `sutramx_list_regions` | Probe locations and their codes | no |
 
 Destructive tools are annotated with `destructiveHint`, so clients that support it ask before running them.
@@ -138,6 +140,7 @@ When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_AP
 
 - Plan limits apply exactly as in the dashboard. When a tool returns `ENTITLEMENT_LIMIT_REACHED` or `FEATURE_NOT_AVAILABLE`, the plan does not allow it.
 - Alert routing (per-monitor email recipients), billing, team and API keys are not available to API keys and so not to this server.
+- Maintenance windows can be listed but not created, changed or deleted: they silence alerting, so the API makes them owner-only and refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`). SLO targets are set in the dashboard; `sutramx_uptime_report` reads them.
 - With a read-only key, `sutramx_whoami` reports `read_only: true`, and any write tool returns `READ_ONLY_ACCESS` with a hint telling the agent not to retry.
 - `config` on `sutramx_update_monitor` replaces the whole object. Agents are told to read the monitor first and send the merged config.
 

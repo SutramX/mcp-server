@@ -110,3 +110,63 @@ export interface Region {
     continent?: string | null;
     online?: boolean;
 }
+
+export interface HealthScore {
+    monitor_id: string;
+    monitor_name: string;
+    score: number;
+    uptime_percentage: number;
+    incident_count: number;
+    mttr_minutes: number;
+    flakiness_index?: number;
+    total_checks: number;
+    [key: string]: unknown;
+}
+
+export interface SloBurnRate {
+    slo_id: string;
+    monitor_id: string;
+    monitor_name: string;
+    target_percentage: number;
+    fast_window_minutes: number;
+    slow_window_minutes: number;
+    fast_burn_rate: number;
+    slow_burn_rate: number;
+    is_alerting: boolean;
+    sample_count: number;
+    error_budget?: {
+        budget_minutes: number;
+        consumed_minutes: number;
+        remaining_minutes: number;
+        remaining_percentage: number;
+        exhausted: boolean;
+    };
+    [key: string]: unknown;
+}
+
+/** GET /reliability/overview (fields the uptime report reads). */
+export interface ReliabilityOverview {
+    window_days: number;
+    healthScores: HealthScore[];
+    burnRates: SloBurnRate[];
+    [key: string]: unknown;
+}
+
+export interface MaintenanceWindow {
+    id: string;
+    title: string;
+    description?: string;
+    status: string;
+    effectiveStatus?: string;
+    startTime: string | null;
+    endTime: string | null;
+    timezone?: string;
+    impact?: string;
+    scopeType?: string;
+    monitorIds?: string[];
+    monitorNames?: string[];
+    groupIds?: string[];
+    groupNames?: string[];
+    recurrence?: { type?: string; weekdays?: number[]; until?: string | null; };
+    [key: string]: unknown;
+}
