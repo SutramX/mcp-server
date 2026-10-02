@@ -44,7 +44,9 @@ Agents can be steered by text they read (prompt injection), so the user, not the
 
 ## 1. Create an API key
 
-In SutramX, open **Settings → API keys → Create API key**. Keys start with `sk_` and are shown once. A standard key is enough for every tool above.
+In SutramX, open **Settings → API keys → Create API key**. Keys start with `sk_` and are shown once.
+
+**Recommended for agents: a Read-only key.** It can call every "no" tool above, and the SutramX API itself refuses every change it attempts (`403 READ_ONLY_ACCESS`), so a leaked key or a prompt-injected agent cannot create, pause, acknowledge, resolve or delete anything. This holds even if the server's own read-only mode is off; combine both (`SUTRAMX_READ_ONLY=true` hides the write tools from the agent as well). Use a Standard key only for an agent that really needs to change things; it is enough for every tool above.
 
 ## 2. Build
 
@@ -136,6 +138,7 @@ When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_AP
 
 - Plan limits apply exactly as in the dashboard. When a tool returns `ENTITLEMENT_LIMIT_REACHED` or `FEATURE_NOT_AVAILABLE`, the plan does not allow it.
 - Alert routing (per-monitor email recipients), billing, team and API keys are not available to API keys and so not to this server.
+- With a read-only key, `sutramx_whoami` reports `read_only: true`, and any write tool returns `READ_ONLY_ACCESS` with a hint telling the agent not to retry.
 - `config` on `sutramx_update_monitor` replaces the whole object. Agents are told to read the monitor first and send the merged config.
 
 ## Security

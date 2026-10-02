@@ -141,6 +141,7 @@ export function describeApiError(error: unknown): string {
     const hint = (() => {
         if (error.status === 0) return 'Check SUTRAMX_API_URL and your network connection.';
         if (error.status === 401) return 'The API key is missing, wrong, revoked or disabled. Create a key in SutramX → Settings → API keys.';
+        if (error.code === 'READ_ONLY_ACCESS') return 'This API key is read-only, so it cannot change anything. Tell the user; do not retry. A workspace owner can create a standard key if changes are really needed.';
         if (error.code === 'AUTOMATION_KEY_REQUIRED') return 'Use an API key created with "Automation access".';
         if (error.code === 'FEATURE_NOT_AVAILABLE' || error.code === 'ENTITLEMENT_LIMIT_REACHED') return 'This needs a higher plan or fewer resources; tell the user rather than retrying.';
         if (error.status === 403) return 'The key is not allowed to do this (some settings are owner-only in the dashboard).';

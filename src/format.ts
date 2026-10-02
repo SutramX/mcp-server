@@ -103,6 +103,26 @@ export function restoreRedacted(next: unknown, current: unknown): unknown {
     return next;
 }
 
+/**
+ * True when a REDACTED left in `next` (after restoreRedacted) does not stand
+ * for a stored value: the API masks stored credentials itself, so `current`
+ * (a fresh read) shows the same masked text at the same place when there is
+ * one. The API then keeps the stored value, or rejects the update (400) if
+ * the monitor's target origin changed.
+ */
+export function hasInventedRedacted(next: unknown, current: unknown): boolean {
+    if (typeof next === 'string') {
+        if (!next.includes(REDACTED)) return false;
+        return !(typeof current === 'string' && (current === next || redactUrlPassword(current) === next));
+    }
+    if (Array.isArray(next)) return next.some((item, index) => hasInventedRedacted(item, Array.isArray(current) ? current[index] : undefined));
+    if (next && typeof next === 'object') {
+        const base = current && typeof current === 'object' ? (current as Record<string, unknown>) : {};
+        return Object.entries(next).some(([name, item]) => hasInventedRedacted(item, base[name]));
+    }
+    return false;
+}
+
 /** True when REDACTED appears anywhere in the value. */
 export function containsRedacted(value: unknown): boolean {
     if (typeof value === 'string') return value.includes(REDACTED);

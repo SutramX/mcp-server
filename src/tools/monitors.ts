@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SutramXClient } from '../client.js';
-import { containsRedacted, ok, paginate, pct, redactSecrets, ResponseFormatSchema, restoreRedacted, safely, untrusted, when } from '../format.js';
+import { containsRedacted, hasInventedRedacted, ok, paginate, pct, redactSecrets, ResponseFormatSchema, restoreRedacted, safely, untrusted, when } from '../format.js';
 import type { CheckPage, Monitor, MonitorSummary, RunCheckResult } from '../types.js';
 
 const STATUSES = ['up', 'down', 'degraded', 'paused', 'pending', 'maintenance'] as const;
@@ -154,9 +154,12 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
         if (Object.keys(changes).length === 0 && !regions) throw new Error('Pass at least one field to change');
         if (containsRedacted(changes)) {
             // The agent read a redacted monitor and sent it back: keep the stored credentials.
+            // Values the API itself returns masked stay [REDACTED]; the API keeps them.
             const current = await client.get<Monitor>(`/monitors/${monitor_id}`);
             for (const field of Object.keys(changes)) changes[field] = restoreRedacted(changes[field], current[field]);
-            if (containsRedacted(changes)) throw new Error('[REDACTED] can only stand for a value that is already stored at the same place in the monitor.');
+            if (Object.keys(changes).some((field) => hasInventedRedacted(changes[field], current[field]))) {
+                throw new Error('[REDACTED] can only stand for a value that is already stored at the same place in the monitor.');
+            }
         }
         let monitor: Monitor | undefined;
         if (Object.keys(changes).length > 0) monitor = await client.put<Monitor>(`/monitors/${monitor_id}`, changes);

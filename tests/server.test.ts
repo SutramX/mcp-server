@@ -5,7 +5,7 @@ import { after, before, test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { bearerKey, isAllowedOrigin } from '../src/auth.js';
-import { parseErrorBody, SutramXClient } from '../src/client.js';
+import { describeApiError, parseErrorBody, SutramXClient } from '../src/client.js';
 import { createSutramXServer } from '../src/server.js';
 import type { ToolPolicy } from '../src/policy.js';
 
@@ -152,4 +152,12 @@ test('get_incident unwraps the {incident, ...} response', async () => {
     assert.equal(result.isError, undefined);
     assert.match(text(result), /# Incident 44444444-4444-4444-8444-444444444444/);
     assert.match(text(result), /«Homepage»/);
+});
+
+test('a read-only key refusal tells the agent not to retry', () => {
+    const error = parseErrorBody(403, { error: 'This API key is read-only. Use a standard or automation API key to make changes.', code: 'READ_ONLY_ACCESS' });
+    const text = describeApiError(error);
+    assert.match(text, /\[READ_ONLY_ACCESS\]/);
+    assert.match(text, /read-only/);
+    assert.match(text, /do not retry/);
 });
