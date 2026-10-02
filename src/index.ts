@@ -3,7 +3,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import type { NextFunction, Request, Response } from 'express';
-import { SutramXClient } from './client.js';
+import { SutramXClient, validateApiUrl } from './client.js';
+import { policyFromEnv, ToolPolicy, truthy } from './policy.js';
 import { bearerKey, isAllowedOrigin } from './auth.js';
 import { DEFAULT_API_URL, SERVER_NAME, SERVER_VERSION } from './constants.js';
 import { createSutramXServer } from './server.js';
@@ -25,7 +26,18 @@ import { createSutramXServer } from './server.js';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 function apiUrl(): string {
-    return process.env.SUTRAMX_API_URL || DEFAULT_API_URL;
+    return validateApiUrl(process.env.SUTRAMX_API_URL || DEFAULT_API_URL);
+}
+
+function describePolicy(policy: ToolPolicy): string {
+    return policy.readOnly ? 'read-only' : policy.allowDestructive ? 'read-write, deletes enabled' : 'read-write, deletes disabled';
+}
+
+function startupChecks(): void {
+    apiUrl(); // fail fast on an unsafe SUTRAMX_API_URL
+    if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+        console.error('Warning: NODE_TLS_REJECT_UNAUTHORIZED=0 disables TLS certificate checks; API keys can be intercepted.');
+    }
 }
 
 function requireEnvKey(): string {
@@ -35,13 +47,19 @@ function requireEnvKey(): string {
         process.exit(1);
     }
     if (!key.startsWith('sk_')) console.error('Warning: SutramX API keys start with "sk_".');
+    if (/[\r\n]/.test(key)) {
+        console.error('SUTRAMX_API_KEY contains a line break.');
+        process.exit(1);
+    }
     return key;
 }
 
 async function runStdio(): Promise<void> {
-    const server = createSutramXServer(new SutramXClient(requireEnvKey(), apiUrl()));
+    startupChecks();
+    const policy = policyFromEnv();
+    const server = createSutramXServer(new SutramXClient(requireEnvKey(), apiUrl()), policy);
     await server.connect(new StdioServerTransport());
-    console.error(`${SERVER_NAME} ${SERVER_VERSION} running on stdio (API ${apiUrl()})`);
+    console.error(`${SERVER_NAME} ${SERVER_VERSION} running on stdio (API ${apiUrl()}, ${describePolicy(policy)})`);
 }
 
 function jsonRpcError(res: Response, status: number, message: string, code = -32001): void {
@@ -53,6 +71,8 @@ function csv(value: string | undefined): string[] {
 }
 
 async function runHttp(): Promise<void> {
+    startupChecks();
+    const serverPolicy = policyFromEnv();
     const host = process.env.HOST || '127.0.0.1';
     const port = Number.parseInt(process.env.PORT || '3333', 10);
     const allowedHosts = csv(process.env.MCP_ALLOWED_HOSTS);
@@ -82,8 +102,14 @@ async function runHttp(): Promise<void> {
             res.setHeader('WWW-Authenticate', 'Bearer realm="sutramx"');
             return jsonRpcError(res, 401, 'Send your SutramX API key as "Authorization: Bearer sk_..."');
         }
+        // Per request, the user's client config may narrow (read-only) or opt
+        // into deletes; the server env can force read-only for everyone.
+        const policy: ToolPolicy = {
+            readOnly: serverPolicy.readOnly || truthy(req.headers['x-sutramx-read-only']),
+            allowDestructive: serverPolicy.allowDestructive || truthy(req.headers['x-sutramx-allow-destructive']),
+        };
         // Stateless: a fresh server + transport per request keeps users isolated.
-        const server = createSutramXServer(new SutramXClient(key, apiUrl()));
+        const server = createSutramXServer(new SutramXClient(key, apiUrl()), policy);
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
         res.on('close', () => {
             void transport.close();
@@ -116,7 +142,7 @@ async function runHttp(): Promise<void> {
     });
 
     app.listen(port, host, () => {
-        console.error(`${SERVER_NAME} ${SERVER_VERSION} listening on http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp (API ${apiUrl()})`);
+        console.error(`${SERVER_NAME} ${SERVER_VERSION} listening on http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp (API ${apiUrl()}, default ${describePolicy(serverPolicy)})`);
     });
 }
 

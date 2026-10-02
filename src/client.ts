@@ -18,6 +18,24 @@ export class SutramXApiError extends Error {
     }
 }
 
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+/** The key goes in every request: https only (plain http just for loopback). */
+export function validateApiUrl(raw: string): string {
+    let parsed: URL;
+    try {
+        parsed = new URL(raw);
+    } catch {
+        throw new Error('SUTRAMX_API_URL is not a valid URL');
+    }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('SUTRAMX_API_URL must not contain credentials, a query string or a fragment');
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && LOOPBACK.has(parsed.hostname.toLowerCase()))) {
+        throw new Error(`Refusing to send API keys to ${parsed.origin}: SUTRAMX_API_URL must use https:// (plain http only for localhost)`);
+    }
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+}
+
 type Query = Record<string, string | number | boolean | undefined | null>;
 
 export interface RequestOptions {
@@ -51,7 +69,7 @@ export class SutramXClient {
     readonly baseUrl: string;
 
     constructor(private readonly apiKey: string, baseUrl: string = DEFAULT_API_URL) {
-        this.baseUrl = baseUrl.replace(/\/+$/, '');
+        this.baseUrl = validateApiUrl(baseUrl);
     }
 
     async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
@@ -70,12 +88,18 @@ export class SutramXClient {
                 headers,
                 body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
                 signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+                // The API never redirects; a redirect must not carry the key elsewhere.
+                redirect: 'error',
             });
         } catch (error) {
             const reason = (error as Error).name === 'TimeoutError' ? `timed out after ${REQUEST_TIMEOUT_MS / 1000}s` : (error as Error).message;
             throw new SutramXApiError(0, `Could not reach the SutramX API at ${this.baseUrl}: ${reason}`);
         }
         if (response.status === 204) return undefined as T;
+        if (Number(response.headers.get('content-length') || 0) > MAX_RESPONSE_BYTES) {
+            await response.body?.cancel().catch(() => undefined);
+            throw new SutramXApiError(response.status, 'Response too large; use filters or a smaller limit');
+        }
         const text = await response.text();
         let body: unknown = undefined;
         if (text) {

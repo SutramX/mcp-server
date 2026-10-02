@@ -15,7 +15,7 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_create_monitor` | Create a monitor (pass `key` for an idempotent create-or-update) | yes |
 | `sutramx_update_monitor` | Change name, URL, interval, config, tags, regions | yes |
 | `sutramx_pause_monitor` / `sutramx_resume_monitor` | Stop or restart checks | yes |
-| `sutramx_delete_monitor` | Delete a monitor and its history | yes, destructive |
+| `sutramx_delete_monitor` | Delete a monitor and its history (only with `SUTRAMX_ALLOW_DESTRUCTIVE`) | yes, destructive |
 | `sutramx_run_check` | Run one real check now | records a check |
 | `sutramx_get_check_results` | Check history by region and status, paginated | no |
 | `sutramx_list_incidents` / `sutramx_get_incident` | Incidents with confirming regions and acknowledgement | no |
@@ -25,10 +25,22 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_list_status_pages` / `sutramx_get_status_page` | Status pages and the monitors on them | no |
 | `sutramx_create_status_page` / `sutramx_update_status_page` | Create or edit a page | yes |
 | `sutramx_set_status_page_monitors` | Replace the monitors shown on a page | yes |
-| `sutramx_delete_status_page` | Delete a page | yes, destructive |
+| `sutramx_delete_status_page` | Delete a page (only with `SUTRAMX_ALLOW_DESTRUCTIVE`) | yes, destructive |
 | `sutramx_list_regions` | Probe locations and their codes | no |
 
 Destructive tools are annotated with `destructiveHint`, so clients that support it ask before running them.
+
+### Access modes
+
+Agents can be steered by text they read (prompt injection), so the user, not the agent, chooses what the server may do:
+
+| Mode | stdio (env) | HTTP (env for the whole server, or a header per client) | Tools |
+|---|---|---|---|
+| read-only | `SUTRAMX_READ_ONLY=true` | `X-SutramX-Read-Only: true` | only the "no" rows above |
+| default | | | everything except permanent deletes |
+| deletes enabled | `SUTRAMX_ALLOW_DESTRUCTIVE=true` | `X-SutramX-Allow-Destructive: true` | everything |
+
+**Breaking change:** `sutramx_delete_monitor` and `sutramx_delete_status_page` are no longer offered unless deletes are enabled. Use read-only mode for assistants that only need to look (triage, reporting). Server-wide `SUTRAMX_READ_ONLY` cannot be overridden by a header.
 
 ## 1. Create an API key
 
@@ -116,6 +128,8 @@ When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_AP
 | `TRANSPORT` | `stdio` | `http` is the same as `--http` |
 | `HOST` / `PORT` | `127.0.0.1` / `3333` | HTTP listener |
 | `MCP_ALLOWED_HOSTS` | (none) | Allowed `Host` headers when not on loopback |
+| `SUTRAMX_READ_ONLY` | `false` | Register only read tools |
+| `SUTRAMX_ALLOW_DESTRUCTIVE` | `false` | Register the delete tools |
 | `MCP_ALLOWED_ORIGINS` | (none) | Extra browser origins allowed to call `/mcp` (comma-separated, e.g. `https://app.example.com`); requests without `Origin` are always allowed |
 
 ## Notes
@@ -123,6 +137,14 @@ When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_AP
 - Plan limits apply exactly as in the dashboard. When a tool returns `ENTITLEMENT_LIMIT_REACHED` or `FEATURE_NOT_AVAILABLE`, the plan does not allow it.
 - Alert routing (per-monitor email recipients), billing, team and API keys are not available to API keys and so not to this server.
 - `config` on `sutramx_update_monitor` replaces the whole object. Agents are told to read the monitor first and send the merged config.
+
+## Security
+
+- `SUTRAMX_API_URL` must be `https://` (plain `http://` only for loopback); the server refuses to start otherwise, warns when `NODE_TLS_REJECT_UNAUTHORIZED=0`, and never follows redirects with a key.
+- Credentials stored in monitor config (headers such as `Authorization`/`Cookie`, keys named like `*token*`, `*secret*`, `*password*`, `*api_key*`, and passwords in URLs) are returned as `[REDACTED]`. Sending `[REDACTED]` back in `sutramx_update_monitor` keeps the stored value; it cannot stand for a value that is not stored.
+- Text that comes from monitored sites or other people (check errors, names, notes) is shown single-line inside `«»`, without control characters, and the server instructions tell the agent to treat it as data.
+- Ids are UUIDs, keys and slugs match strict patterns, times must be ISO-8601, so tool arguments cannot change the API path or add query parameters.
+- HTTP mode: every request needs its own `Authorization: Bearer sk_...`; the env key is only a fallback on loopback. Put a rate limiter in front of a public deployment (the API itself rate-limits per key).
 
 ## Development
 

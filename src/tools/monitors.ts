@@ -1,38 +1,42 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SutramXClient } from '../client.js';
-import { ok, paginate, pct, ResponseFormatSchema, safely, when } from '../format.js';
+import { containsRedacted, ok, paginate, pct, redactSecrets, ResponseFormatSchema, restoreRedacted, safely, untrusted, when } from '../format.js';
 import type { CheckPage, Monitor, MonitorSummary, RunCheckResult } from '../types.js';
 
 const STATUSES = ['up', 'down', 'degraded', 'paused', 'pending', 'maintenance'] as const;
 
 const MonitorIdSchema = z.string().uuid().describe('Monitor id (UUID). Use sutramx_list_monitors to find it.');
+const MonitorKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/, 'letters, digits and . _ : / - (1-128 characters, starting with a letter or digit)');
+const RegionCodeSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,19}$/, 'lower-case region code, e.g. "bom"');
+/** ISO-8601 timestamps only: these go into query strings. */
+export const IsoTimeSchema = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}([T ][0-9:.]+(Z|[+-]\d{2}:?\d{2})?)?$/, 'ISO-8601 time, e.g. 2026-01-31T12:00:00Z');
 
 const MonitorFieldsShape = {
     name: z.string().min(1).max(255).describe('Display name, e.g. "Checkout API"'),
     url: z.string().max(2048).optional().describe('Target URL for http/api monitors (https://...). Ping/port/udp monitors use config.host instead.'),
     interval_seconds: z.number().int().min(15).max(900).optional().describe('Seconds between checks (15-900). Plans have a minimum; omit for the plan default.'),
     config: z.record(z.string(), z.unknown()).optional().describe('Type-specific settings, e.g. {"timeout": 10000, "expected_status_codes": [200], "keyword": "ok", "headers": {...}}; ping monitors need {"host": "example.com"}; port/udp monitors {"host": "db.example.com", "port": 5432}; cron monitors {"cron_expression": "*/5 * * * *"}.'),
-    tags: z.array(z.string().min(1).max(32)).max(20).optional().describe('Labels, lower-cased (e.g. ["prod", "api"])'),
-    regions: z.array(z.string().min(1).max(20)).min(1).max(50).optional().describe('Probe location codes to check from (e.g. ["bom", "sin", "fra"]). See sutramx_list_regions. Omit for the plan default.'),
+    tags: z.array(z.string().min(1).max(32).regex(/^[^\u0000-\u001f]+$/)).max(20).optional().describe('Labels, lower-cased (e.g. ["prod", "api"])'),
+    regions: z.array(RegionCodeSchema).min(1).max(50).optional().describe('Probe location codes to check from (e.g. ["bom", "sin", "fra"]). See sutramx_list_regions. Omit for the plan default.'),
 };
 
 export function monitorLine(monitor: Monitor): string {
     const status = monitor.current_status || (monitor.is_active ? 'pending' : 'paused');
     const target = monitor.url ? ` ${monitor.url}` : '';
     const key = monitor.external_id ? ` key=${monitor.external_id}` : '';
-    return `- **${monitor.name}** (${monitor.id}) [${monitor.type}] ${status.toUpperCase()}${target} · every ${monitor.interval_seconds}s · 24h ${pct(monitor.uptime_24h)}${key}`;
+    return `- **${untrusted(monitor.name, 120)}** (${monitor.id}) [${monitor.type}] ${status.toUpperCase()}${target} · every ${monitor.interval_seconds}s · 24h ${pct(monitor.uptime_24h)}${key}`;
 }
 
 function monitorMarkdown(monitor: Monitor): string {
     const lines = [
-        `# ${monitor.name}`,
+        `# ${untrusted(monitor.name, 255)}`,
         `- id: ${monitor.id}${monitor.external_id ? ` (key: ${monitor.external_id})` : ''}`,
         `- type: ${monitor.type}${monitor.url ? ` · target: ${monitor.url}` : ''}`,
         `- status: ${monitor.current_status ?? (monitor.is_active ? 'active' : 'paused')}${monitor.open_incident ? ` · open incident ${monitor.open_incident.id} since ${when(monitor.open_incident.started_at)}` : ''}`,
         `- interval: ${monitor.interval_seconds}s · regions: ${(monitor.effective_regions || monitor.probe_regions || []).join(', ') || 'plan default'}`,
         `- uptime: 24h ${pct(monitor.uptime_24h)} · 30d ${pct(monitor.uptime_30d)}`,
-        `- last check: ${when(monitor.last_checked_at)}${monitor.last_status ? ` (${monitor.last_status}${monitor.last_response_time_ms != null ? `, ${monitor.last_response_time_ms} ms` : ''})` : ''}${monitor.last_error ? ` · error: ${monitor.last_error}` : ''}`,
+        `- last check: ${when(monitor.last_checked_at)}${monitor.last_status ? ` (${monitor.last_status}${monitor.last_response_time_ms != null ? `, ${monitor.last_response_time_ms} ms` : ''})` : ''}${monitor.last_error ? ` · error: ${untrusted(monitor.last_error)}` : ''}`,
     ];
     if (monitor.tags?.length) lines.push(`- tags: ${monitor.tags.join(', ')}`);
     if (monitor.heartbeat_url) lines.push(`- heartbeat URL: ${monitor.heartbeat_url}`);
@@ -58,7 +62,7 @@ Use sutramx_get_monitor for one monitor's full details and sutramx_get_check_res
         },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ status, tag, search, limit, offset, response_format }) => {
-        let monitors = await client.get<Monitor[]>('/monitors', { tag });
+        let monitors = redactSecrets(await client.get<Monitor[]>('/monitors', { tag }));
         if (status) monitors = monitors.filter((monitor) => monitor.current_status === status);
         if (search) {
             const needle = search.toLowerCase();
@@ -93,15 +97,15 @@ Use sutramx_get_monitor for one monitor's full details and sutramx_get_check_res
         description: 'Full details of one monitor by id (or by its monitoring-as-code key): config, regions, live status, uptime, last check and any open incident.',
         inputSchema: {
             monitor_id: MonitorIdSchema.optional(),
-            key: z.string().max(128).optional().describe('The monitor key set by sutramx.yml / Terraform, instead of monitor_id'),
+            key: MonitorKeySchema.optional().describe('The monitor key set by sutramx.yml / Terraform, instead of monitor_id'),
             response_format: ResponseFormatSchema,
         },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ monitor_id, key, response_format }) => {
         if (!monitor_id && !key) throw new Error('Pass monitor_id or key');
-        const monitor = monitor_id
+        const monitor = redactSecrets(monitor_id
             ? await client.get<Monitor>(`/monitors/${monitor_id}`)
-            : await client.get<Monitor>(`/automation/monitors/${encodeURIComponent(key!)}`);
+            : await client.get<Monitor>(`/automation/monitors/${encodeURIComponent(key!)}`));
         return ok(monitor as unknown as Record<string, unknown>, monitorMarkdown(monitor), response_format);
     }));
 
@@ -116,17 +120,19 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
         inputSchema: {
             type: z.string().min(2).max(32).default('http').describe('Monitor type: http, api, ping, port, udp or cron (plus any newer type the account supports)'),
             ...MonitorFieldsShape,
-            key: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/).optional().describe('Optional stable key for idempotent create-or-update'),
+            key: MonitorKeySchema.optional().describe('Optional stable key for idempotent create-or-update'),
             paused: z.boolean().optional().describe('Create it paused'),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     }, safely(async ({ key, paused, ...fields }) => {
+        if (containsRedacted(fields)) throw new Error('Replace [REDACTED] with real values when creating a monitor (or use sutramx_update_monitor to keep stored ones).');
         if (key) {
-            const result = await client.put<{ action: string; monitor: Monitor; }>(`/automation/monitors/${encodeURIComponent(key)}`, { ...fields, ...(paused !== undefined ? { paused } : {}) });
+            const result = redactSecrets(await client.put<{ action: string; monitor: Monitor; }>(`/automation/monitors/${encodeURIComponent(key)}`, { ...fields, ...(paused !== undefined ? { paused } : {}) }));
             return ok(result as unknown as Record<string, unknown>, `Monitor ${result.action}.\n\n${monitorMarkdown(result.monitor)}`);
         }
         let monitor = await client.post<Monitor>('/monitors', fields);
-        if (paused) monitor = await client.post<Monitor>(`/monitors/${monitor.id}/pause`);
+        if (paused) monitor = await client.post<Monitor>(`/monitors/${encodeURIComponent(monitor.id)}/pause`);
+        monitor = redactSecrets(monitor);
         return ok({ action: 'created', monitor } as unknown as Record<string, unknown>, `Monitor created.\n\n${monitorMarkdown(monitor)}`);
     }));
 
@@ -144,15 +150,22 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ monitor_id, regions, ...fields }) => {
-        const changes = Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+        const changes: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
         if (Object.keys(changes).length === 0 && !regions) throw new Error('Pass at least one field to change');
+        if (containsRedacted(changes)) {
+            // The agent read a redacted monitor and sent it back: keep the stored credentials.
+            const current = await client.get<Monitor>(`/monitors/${monitor_id}`);
+            for (const field of Object.keys(changes)) changes[field] = restoreRedacted(changes[field], current[field]);
+            if (containsRedacted(changes)) throw new Error('[REDACTED] can only stand for a value that is already stored at the same place in the monitor.');
+        }
         let monitor: Monitor | undefined;
         if (Object.keys(changes).length > 0) monitor = await client.put<Monitor>(`/monitors/${monitor_id}`, changes);
         if (regions) {
             await client.put(`/monitors/${monitor_id}/regions`, { regions });
             monitor = await client.get<Monitor>(`/monitors/${monitor_id}`);
         }
-        return ok({ monitor } as unknown as Record<string, unknown>, `Monitor updated.\n\n${monitorMarkdown(monitor!)}`);
+        monitor = redactSecrets(monitor!);
+        return ok({ monitor } as unknown as Record<string, unknown>, `Monitor updated.\n\n${monitorMarkdown(monitor)}`);
     }));
 
     server.registerTool('sutramx_pause_monitor', {
@@ -161,8 +174,8 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
         inputSchema: { monitor_id: MonitorIdSchema },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ monitor_id }) => {
-        const monitor = await client.post<Monitor>(`/monitors/${monitor_id}/pause`);
-        return ok({ monitor } as unknown as Record<string, unknown>, `Paused **${monitor.name}** (${monitor.id}).`);
+        const monitor = redactSecrets(await client.post<Monitor>(`/monitors/${monitor_id}/pause`));
+        return ok({ monitor } as unknown as Record<string, unknown>, `Paused ${untrusted(monitor.name, 120)} (${monitor.id}).`);
     }));
 
     server.registerTool('sutramx_resume_monitor', {
@@ -171,13 +184,13 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
         inputSchema: { monitor_id: MonitorIdSchema },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ monitor_id }) => {
-        const monitor = await client.post<Monitor>(`/monitors/${monitor_id}/resume`);
-        return ok({ monitor } as unknown as Record<string, unknown>, `Resumed **${monitor.name}** (${monitor.id}).`);
+        const monitor = redactSecrets(await client.post<Monitor>(`/monitors/${monitor_id}/resume`));
+        return ok({ monitor } as unknown as Record<string, unknown>, `Resumed ${untrusted(monitor.name, 120)} (${monitor.id}).`);
     }));
 
     server.registerTool('sutramx_delete_monitor', {
         title: 'Delete monitor',
-        description: 'Permanently delete a monitor with its check history and incidents. Cannot be undone; confirm with the user first. Use sutramx_pause_monitor to stop checks temporarily.',
+        description: 'Permanently delete a monitor with its check history and incidents. Cannot be undone; confirm with the user first. Use sutramx_pause_monitor to stop checks temporarily. Only available when the user enabled destructive tools (SUTRAMX_ALLOW_DESTRUCTIVE).',
         inputSchema: { monitor_id: MonitorIdSchema },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ monitor_id }) => {
@@ -192,7 +205,7 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     }, safely(async ({ monitor_id }) => {
         const result = await client.post<RunCheckResult>(`/monitors/${monitor_id}/run-check`);
-        const markdown = `Check from ${result.region}: **${result.status.toUpperCase()}** in ${result.response_time_ms} ms${result.status_code ? ` (HTTP ${result.status_code})` : ''}${result.error_message ? `\nError: ${result.error_message}` : ''}`;
+        const markdown = `Check from ${result.region}: **${result.status.toUpperCase()}** in ${result.response_time_ms} ms${result.status_code ? ` (HTTP ${result.status_code})` : ''}${result.error_message ? `\nError: ${untrusted(result.error_message)}` : ''}`;
         return ok(result as unknown as Record<string, unknown>, markdown);
     }));
 
@@ -204,8 +217,8 @@ Paginate with "before" = next_before from the previous page. status "problem" re
         inputSchema: {
             monitor_id: MonitorIdSchema,
             limit: z.number().int().min(1).max(500).default(50).describe('Rows to return (1-500)'),
-            before: z.string().optional().describe('ISO-8601 cursor: only checks before this time (next_before of the previous page)'),
-            region: z.string().max(40).optional().describe('Only this region code, e.g. "bom"'),
+            before: IsoTimeSchema.optional().describe('ISO-8601 cursor: only checks before this time (next_before of the previous page)'),
+            region: RegionCodeSchema.optional().describe('Only this region code, e.g. "bom"'),
             status: z.enum(['up', 'down', 'degraded', 'problem']).optional().describe('Only checks with this status'),
             response_format: ResponseFormatSchema,
         },
@@ -219,7 +232,7 @@ Paginate with "before" = next_before from the previous page. status "problem" re
                 `# Checks (${rows.length})`,
                 '| time | region | status | ms | HTTP | error |',
                 '|---|---|---|---|---|---|',
-                ...rows.map((row) => `| ${when(row.checked_at)} | ${row.region} | ${row.status} | ${row.response_time_ms ?? ''} | ${row.status_code ?? ''} | ${(row.error_type || row.error_message || '').toString().slice(0, 80)} |`),
+                ...rows.map((row) => `| ${when(row.checked_at)} | ${String(row.region ?? '').replace(/[^a-z0-9-]/gi, '')} | ${row.status} | ${row.response_time_ms ?? ''} | ${row.status_code ?? ''} | ${row.error_type || row.error_message ? untrusted(row.error_type || row.error_message, 80).replace(/\|/g, '/') : ''} |`),
                 page.next_before ? `\nOlder checks: before=${page.next_before}` : '',
             ].join('\n');
         return ok(page as unknown as Record<string, unknown>, markdown, response_format);

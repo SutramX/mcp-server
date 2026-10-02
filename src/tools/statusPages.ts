@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SutramXClient } from '../client.js';
-import { ok, ResponseFormatSchema, safely } from '../format.js';
+import { ok, ResponseFormatSchema, safely, untrusted } from '../format.js';
 import type { StatusPage } from '../types.js';
 
 const StatusPageIdSchema = z.string().uuid().describe('Status page id (UUID). Use sutramx_list_status_pages to find it.');
@@ -9,7 +9,7 @@ const StatusPageIdSchema = z.string().uuid().describe('Status page id (UUID). Us
 function pageLine(page: StatusPage): string {
     const visibility = page.is_public ? 'public' : 'not public';
     const domain = page.custom_domain ? ` · ${page.custom_domain}` : '';
-    return `- **${page.title}** (${page.id}) slug=${page.slug} · ${visibility} · ${page.monitor_count ?? page.monitors?.length ?? 0} monitors${domain}`;
+    return `- **${untrusted(page.title, 120)}** (${page.id}) slug=${page.slug} · ${visibility} · ${page.monitor_count ?? page.monitors?.length ?? 0} monitors${domain}`;
 }
 
 const MonitorEntrySchema = z.object({
@@ -36,8 +36,8 @@ export function registerStatusPageTools(server: McpServer, client: SutramXClient
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ status_page_id, response_format }) => {
         const page = await client.get<StatusPage>(`/status/pages/${status_page_id}`);
-        const monitors = (page.monitors || []).map((monitor) => `  - ${monitor.name} (${monitor.id})${monitor.section ? ` · section ${monitor.section}` : ''}`);
-        return ok(page as unknown as Record<string, unknown>, [`# ${page.title}`, pageLine(page), monitors.length ? 'Monitors:' : 'No monitors on this page.', ...monitors].join('\n'), response_format);
+        const monitors = (page.monitors || []).map((monitor) => `  - ${untrusted(monitor.name, 120)} (${monitor.id})${monitor.section ? ` · section ${untrusted(monitor.section, 100)}` : ''}`);
+        return ok(page as unknown as Record<string, unknown>, [`# ${untrusted(page.title, 255)}`, pageLine(page), monitors.length ? 'Monitors:' : 'No monitors on this page.', ...monitors].join('\n'), response_format);
     }));
 
     server.registerTool('sutramx_create_status_page', {
@@ -61,17 +61,19 @@ export function registerStatusPageTools(server: McpServer, client: SutramXClient
             status_page_id: StatusPageIdSchema,
             title: z.string().min(1).max(255).optional(),
             description: z.string().max(1000).nullable().optional(),
-            slug: z.string().min(3).max(64).optional().describe('URL slug'),
+            slug: z.string().min(3).max(64).regex(/^[a-z0-9-]+$/, 'lower-case letters, digits and hyphens').optional().describe('URL slug'),
             is_public: z.boolean().optional(),
-            logo_url: z.string().max(2048).nullable().optional().describe('https:// image URL, or null to remove'),
+            logo_url: z.string().max(2048).regex(/^https:\/\//i, 'must be an https:// URL').nullable().optional().describe('https:// image URL, or null to remove'),
             accent_color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional().describe('Hex colour like #0d9488'),
             show_response_times: z.boolean().optional(),
             hide_powered_by: z.boolean().optional().describe('White-label plans only'),
-            other_fields: z.record(z.string(), z.unknown()).optional().describe('Any newer page setting the API accepts, passed through as-is'),
+            other_fields: z.record(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), z.union([z.string().max(2048), z.number(), z.boolean(), z.null()])).optional().describe('Any newer page setting the API accepts (scalar values), passed through as-is'),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ status_page_id, other_fields, ...fields }) => {
-        const patch = { ...(other_fields || {}), ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) };
+        // Named fields win over other_fields; other_fields cannot smuggle prototype keys.
+        const extra = Object.fromEntries(Object.entries(other_fields || {}).filter(([name]) => name !== '__proto__' && name !== 'constructor' && name !== 'prototype'));
+        const patch = { ...extra, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) };
         if (Object.keys(patch).length === 0) throw new Error('Pass at least one field to change');
         const page = await client.patch<StatusPage>(`/status/pages/${status_page_id}`, patch);
         return ok(page as unknown as Record<string, unknown>, `Status page updated.\n${pageLine(page)}`);
@@ -92,7 +94,7 @@ export function registerStatusPageTools(server: McpServer, client: SutramXClient
 
     server.registerTool('sutramx_delete_status_page', {
         title: 'Delete status page',
-        description: 'Permanently delete a status page and its subscriber list. Monitors are not affected. Cannot be undone; confirm with the user first.',
+        description: 'Permanently delete a status page and its subscriber list. Monitors are not affected. Cannot be undone; confirm with the user first. Only available when the user enabled destructive tools (SUTRAMX_ALLOW_DESTRUCTIVE).',
         inputSchema: { status_page_id: StatusPageIdSchema },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ status_page_id }) => {

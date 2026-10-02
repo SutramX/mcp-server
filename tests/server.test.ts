@@ -7,6 +7,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { bearerKey, isAllowedOrigin } from '../src/auth.js';
 import { parseErrorBody, SutramXClient } from '../src/client.js';
 import { createSutramXServer } from '../src/server.js';
+import type { ToolPolicy } from '../src/policy.js';
 
 /** A fake SutramX API that records requests. */
 const requests: Array<{ method: string; url: string; auth?: string; body?: any; }> = [];
@@ -47,8 +48,8 @@ before(async () => {
 
 after(() => api.close());
 
-async function connect(key = 'sk_test') {
-    const server = createSutramXServer(new SutramXClient(key, baseUrl));
+async function connect(key = 'sk_test', policy: ToolPolicy = { readOnly: false, allowDestructive: true }) {
+    const server = createSutramXServer(new SutramXClient(key, baseUrl), policy);
     const client = new Client({ name: 'test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -150,5 +151,5 @@ test('get_incident unwraps the {incident, ...} response', async () => {
     const result: any = await client.callTool({ name: 'sutramx_get_incident', arguments: { incident_id: '44444444-4444-4444-8444-444444444444', response_format: 'markdown' } });
     assert.equal(result.isError, undefined);
     assert.match(text(result), /# Incident 44444444-4444-4444-8444-444444444444/);
-    assert.match(text(result), /\*\*Homepage\*\*/);
+    assert.match(text(result), /«Homepage»/);
 });

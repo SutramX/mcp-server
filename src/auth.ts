@@ -1,8 +1,9 @@
 /** SutramX API key from an "Authorization: Bearer sk_..." header, or null. */
 export function bearerKey(header: string | undefined): string | null {
     if (!header) return null;
-    const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
-    return match && match[1].startsWith('sk_') ? match[1] : null;
+    if (header.length > 512) return null;
+    const match = /^Bearer\s+(sk_[A-Za-z0-9_-]{1,256})$/i.exec(header.trim());
+    return match ? match[1] : null;
 }
 
 /**
