@@ -159,3 +159,13 @@ npm run dev          # stdio, from source
 npm test             # tool tests against a fake API
 npx @modelcontextprotocol/inspector node dist/index.js   # interactive inspector
 ```
+
+## Releasing
+
+1. Bump the version in `package.json`, `src/constants.ts` (`SERVER_VERSION`) and `server.json` (`version` and `packages[0].version`); `npm run check-version` verifies they agree.
+2. Commit and push a tag `v<version>`. `.github/workflows/release.yml` checks the tag against those files, runs typecheck, tests and build, and publishes to npm with provenance (needs the `NPM_TOKEN` repository secret). `npm pack --dry-run` shows exactly what will be published.
+3. After the npm release, publish `server.json` to the [MCP Registry](https://registry.modelcontextprotocol.io) with `mcp-publisher login github` (as a member of the `sutramx` GitHub organization, which owns the `io.github.sutramx/*` namespace) and `mcp-publisher publish`. The registry checks that the npm package's `mcpName` equals the `name` in `server.json`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

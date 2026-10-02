@@ -1,0 +1,56 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.sutramx/mcp-server",
+  "title": "SutramX",
+  "description": "SutramX uptime monitoring: monitors, check results, incidents, status pages and uptime/SLO reports.",
+  "version": "0.1.0",
+  "websiteUrl": "https://sutramx.com",
+  "repository": {
+    "url": "https://github.com/sutramx/mcp-server",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@sutramx/mcp-server",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SUTRAMX_API_KEY",
+          "description": "SutramX workspace API key (sk_...), from Settings > API keys. A Read-only key is recommended for agents.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "SUTRAMX_API_URL",
+          "description": "API base URL; https only. Change it only for staging or self-hosted installs.",
+          "isRequired": false,
+          "format": "string",
+          "default": "https://api.sutramx.com"
+        },
+        {
+          "name": "SUTRAMX_READ_ONLY",
+          "description": "true registers only read tools.",
+          "isRequired": false,
+          "format": "boolean",
+          "default": "false",
+          "choices": ["true", "false"]
+        },
+        {
+          "name": "SUTRAMX_ALLOW_DESTRUCTIVE",
+          "description": "true also registers the permanent delete tools (monitors, status pages).",
+          "isRequired": false,
+          "format": "boolean",
+          "default": "false",
+          "choices": ["true", "false"]
+        }
+      ]
+    }
+  ]
+}
