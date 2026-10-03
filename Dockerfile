@@ -40,7 +40,7 @@ USER node
 EXPOSE 3333
 
 # /health returns 200 while the process is serving. The Host header must be
-# in MCP_ALLOWED_HOSTS, which is why compose lists 127.0.0.1 there.
+# allowed: when MCP_ALLOWED_HOSTS is set, include 127.0.0.1 in it.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3333)+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 

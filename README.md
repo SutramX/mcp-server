@@ -12,10 +12,10 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_monitor_summary` | Counts by status, open incidents, 24h uptime | no |
 | `sutramx_list_monitors` | Monitors with live status and uptime; filter by status, tag, text | no |
 | `sutramx_get_monitor` | One monitor by id or monitoring-as-code key | no |
-| `sutramx_create_monitor` | Create a monitor (pass `key` for an idempotent create-or-update) | yes |
+| `sutramx_create_monitor` | Create a monitor of any type: `http`, `api`, `ping`, `port`, `udp`, `dns`, `multistep` or `cron` (pass `key` for an idempotent create-or-update) | yes |
 | `sutramx_update_monitor` | Change name, URL, interval, config, tags, regions | yes |
 | `sutramx_pause_monitor` / `sutramx_resume_monitor` | Stop or restart checks | yes |
-| `sutramx_delete_monitor` | Delete a monitor and its history (only with `SUTRAMX_ALLOW_DESTRUCTIVE`) | yes, destructive |
+| `sutramx_delete_monitor` | Delete a monitor and its history (hidden unless deletes are enabled) | yes, destructive |
 | `sutramx_run_check` | Run one real check now | records a check |
 | `sutramx_get_check_results` | Check history by region and status, paginated | no |
 | `sutramx_list_incidents` / `sutramx_get_incident` | Incidents with confirming regions and acknowledgement | no |
@@ -23,9 +23,9 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_resolve_incident` | Resolve by hand with a note | yes |
 | `sutramx_add_incident_note` | Add a timeline note | yes |
 | `sutramx_list_status_pages` / `sutramx_get_status_page` | Status pages and the monitors on them | no |
-| `sutramx_create_status_page` / `sutramx_update_status_page` | Create or edit a page | yes |
+| `sutramx_create_status_page` / `sutramx_update_status_page` | Create a page, or change its `title`, `description`, `slug`, `is_public`, `logo_url`, `accent_color`, `favicon_url`, `hide_powered_by`, `show_response_times` (any other setting is rejected) | yes |
 | `sutramx_set_status_page_monitors` | Replace the monitors shown on a page | yes |
-| `sutramx_delete_status_page` | Delete a page (only with `SUTRAMX_ALLOW_DESTRUCTIVE`) | yes, destructive |
+| `sutramx_delete_status_page` | Delete a page (hidden unless deletes are enabled) | yes, destructive |
 | `sutramx_uptime_report` | Uptime %, incidents, MTTR and health score per monitor over 7/14/30/90 days, plus SLO error budgets and burn rates | no |
 | `sutramx_list_maintenance_windows` | Maintenance windows (scope, schedule, recurrence); filter by state | no |
 | `sutramx_list_regions` | Probe locations and their codes | no |
@@ -34,15 +34,18 @@ Destructive tools are annotated with `destructiveHint`, so clients that support 
 
 ### Access modes
 
-Agents can be steered by text they read (prompt injection), so the user, not the agent, chooses what the server may do:
+Agents can be steered by text they read (prompt injection), so the user, not the agent, chooses which tools the server offers. Tools that are not allowed are not registered at all: the agent never sees them.
 
-| Mode | stdio (env) | HTTP (env for the whole server, or a header per client) | Tools |
+| Mode | stdio (env) | HTTP (env for the whole server, or a header per client) | Tools offered |
 |---|---|---|---|
 | read-only | `SUTRAMX_READ_ONLY=true` | `X-SutramX-Read-Only: true` | only the "no" rows above |
-| default | | | everything except permanent deletes |
+| default | (neither set) | (neither set) | everything except the two delete tools |
 | deletes enabled | `SUTRAMX_ALLOW_DESTRUCTIVE=true` | `X-SutramX-Allow-Destructive: true` | everything |
 
-**Breaking change:** `sutramx_delete_monitor` and `sutramx_delete_status_page` are no longer offered unless deletes are enabled. Use read-only mode for assistants that only need to look (triage, reporting). Server-wide `SUTRAMX_READ_ONLY` cannot be overridden by a header.
+- Both settings are off by default, so `sutramx_delete_monitor` and `sutramx_delete_status_page` are hidden unless deletes are enabled. `true`, `1`, `yes` and `on` (any case) turn a setting on; anything else leaves it off.
+- Read-only wins: with read-only on, the delete tools stay hidden even when deletes are enabled.
+- HTTP mode: a header can only add to the server's environment, not take away from it. `SUTRAMX_READ_ONLY=true` on the server makes every request read-only whatever the headers say, and `SUTRAMX_ALLOW_DESTRUCTIVE=true` on the server enables deletes for every request that is not read-only. Without them, each client chooses with its own headers.
+- Use read-only mode for assistants that only need to look (triage, reporting), ideally together with a Read-only API key (below).
 
 ## 1. Create an API key
 
@@ -139,7 +142,7 @@ When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_AP
 ## Notes
 
 - Plan limits apply exactly as in the dashboard. When a tool returns `ENTITLEMENT_LIMIT_REACHED` or `FEATURE_NOT_AVAILABLE`, the plan does not allow it.
-- Alert routing (per-monitor email recipients), billing, team and API keys are not available to API keys and so not to this server.
+- Billing, team members and API keys cannot be managed with an API key, and so not with this server. Per-monitor alert recipients (`config.notification_emails`) can only be set with an API key that has Automation access; other keys get a clear error.
 - Maintenance windows can be listed but not created, changed or deleted: they silence alerting, so the API makes them owner-only and refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`). SLO targets are set in the dashboard; `sutramx_uptime_report` reads them.
 - With a read-only key, `sutramx_whoami` reports `read_only: true`, and any write tool returns `READ_ONLY_ACCESS` with a hint telling the agent not to retry.
 - `config` on `sutramx_update_monitor` replaces the whole object. Agents are told to read the monitor first and send the merged config.
@@ -159,12 +162,6 @@ npm run dev          # stdio, from source
 npm test             # tool tests against a fake API
 npx @modelcontextprotocol/inspector node dist/index.js   # interactive inspector
 ```
-
-## Releasing
-
-1. Bump the version in `package.json`, `src/constants.ts` (`SERVER_VERSION`) and `server.json` (`version` and `packages[0].version`); `npm run check-version` verifies they agree.
-2. Commit and push a tag `v<version>`. `.github/workflows/release.yml` checks the tag against those files, runs typecheck, tests and build, and publishes to npm with provenance (needs the `NPM_TOKEN` repository secret). `npm pack --dry-run` shows exactly what will be published.
-3. After the npm release, publish `server.json` to the [MCP Registry](https://registry.modelcontextprotocol.io) with `mcp-publisher login github` (as a member of the `sutramx` GitHub organization, which owns the `io.github.sutramx/*` namespace) and `mcp-publisher publish`. The registry checks that the npm package's `mcpName` equals the `name` in `server.json`.
 
 ## License
 

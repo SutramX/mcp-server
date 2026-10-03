@@ -5,6 +5,8 @@ import { containsRedacted, hasInventedRedacted, ok, paginate, pct, redactSecrets
 import type { CheckPage, Monitor, MonitorSummary, RunCheckResult } from '../types.js';
 
 const STATUSES = ['up', 'down', 'degraded', 'paused', 'pending', 'maintenance'] as const;
+/** Monitor types POST /monitors accepts. */
+export const MONITOR_TYPES = ['http', 'api', 'ping', 'port', 'udp', 'dns', 'multistep', 'cron'] as const;
 
 const MonitorIdSchema = z.string().uuid().describe('Monitor id (UUID). Use sutramx_list_monitors to find it.');
 const MonitorKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/, 'letters, digits and . _ : / - (1-128 characters, starting with a letter or digit)');
@@ -14,9 +16,9 @@ export const IsoTimeSchema = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}([T ][0
 
 const MonitorFieldsShape = {
     name: z.string().min(1).max(255).describe('Display name, e.g. "Checkout API"'),
-    url: z.string().max(2048).optional().describe('Target URL for http/api monitors (https://...). Ping/port/udp monitors use config.host instead.'),
+    url: z.string().max(2048).optional().describe('Target URL, required for http/api monitors (https://...). Other types take their target from config: ping/port/udp config.host, dns config.hostname, multistep the URL of each step.'),
     interval_seconds: z.number().int().min(15).max(900).optional().describe('Seconds between checks (15-900). Plans have a minimum; omit for the plan default.'),
-    config: z.record(z.string(), z.unknown()).optional().describe('Type-specific settings, e.g. {"timeout": 10000, "expected_status_codes": [200], "keyword": "ok", "headers": {...}}; ping monitors need {"host": "example.com"}; port/udp monitors {"host": "db.example.com", "port": 5432}; cron monitors {"cron_expression": "*/5 * * * *"}.'),
+    config: z.record(z.string(), z.unknown()).optional().describe('Type-specific settings, e.g. {"timeout": 10000, "expected_status_codes": [200], "keyword": "ok", "headers": {...}}; ping monitors need {"host": "example.com"}; port/udp monitors {"host": "db.example.com", "port": 5432}; dns monitors {"hostname": "example.com", "record_type": "A"} (record_type A, AAAA, CNAME, MX, TXT or NS; alerts on any change, or set "dns_mode": "expected" with "expected_values": [...]); multistep monitors {"steps": [{"name": "Login", "method": "POST", "url": "https://api.example.com/login", "expected_status_codes": [200]}, ...]} (write-only secrets go in "secrets": {"NAME": "value"} and are used as {{secrets.NAME}}); cron monitors {"cron_expression": "*/5 * * * *"}.'),
     tags: z.array(z.string().min(1).max(32).regex(/^[^\u0000-\u001f]+$/)).max(20).optional().describe('Labels, lower-cased (e.g. ["prod", "api"])'),
     regions: z.array(RegionCodeSchema).min(1).max(50).optional().describe('Probe location codes to check from (e.g. ["fra1", "usa-az-probe"]). See sutramx_list_regions. Omit for the plan default.'),
 };
@@ -114,11 +116,11 @@ Use sutramx_get_monitor for one monitor's full details and sutramx_get_check_res
         description: `Create a monitor. It is scheduled immediately.
 
 Pass "key" to make the call idempotent: a monitor with that key is created once and updated on later calls (same as sutramx.yml / Terraform). Without a key every call creates a new monitor.
-Plan limits (monitor count, minimum interval, locations) are enforced; a 403 ENTITLEMENT_LIMIT_REACHED means the plan is full.
+Plan limits (monitor count, minimum interval, locations) are enforced; a 403 ENTITLEMENT_LIMIT_REACHED means the plan is full. dns and multistep monitors need a plan that includes them (403 FEATURE_NOT_AVAILABLE otherwise).
 
-Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly backup","type":"cron","config":{"cron_expression":"0 2 * * *"}}; {"name":"Postgres","type":"port","config":{"host":"db.example.com","port":5432}}`,
+Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly backup","type":"cron","config":{"cron_expression":"0 2 * * *"}}; {"name":"Postgres","type":"port","config":{"host":"db.example.com","port":5432}}; {"name":"MX records","type":"dns","config":{"hostname":"example.com","record_type":"MX"}}`,
         inputSchema: {
-            type: z.string().min(2).max(32).default('http').describe('Monitor type: http, api, ping, port, udp or cron (plus any newer type the account supports)'),
+            type: z.string().min(2).max(32).default('http').describe(`Monitor type: ${MONITOR_TYPES.join(', ')} (default http)`),
             ...MonitorFieldsShape,
             key: MonitorKeySchema.optional().describe('Optional stable key for idempotent create-or-update'),
             paused: z.boolean().optional().describe('Create it paused'),

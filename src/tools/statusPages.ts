@@ -17,6 +17,48 @@ const MonitorEntrySchema = z.object({
     section: z.string().max(100).nullable().optional().describe('Optional group heading on the page, e.g. "API"'),
 });
 
+/** The keys PATCH /status/pages/:id accepts; the API rejects any other key (400). */
+export const STATUS_PAGE_SETTINGS = [
+    'title', 'description', 'slug', 'is_public', 'logo_url', 'accent_color', 'favicon_url', 'hide_powered_by', 'show_response_times',
+] as const;
+
+const HttpsUrlSchema = z.string().max(2048).regex(/^https:\/\//i, 'must be an https:// URL');
+
+const StatusPageSettingsShape = {
+    title: z.string().min(1).max(255).optional(),
+    description: z.string().max(1000).nullable().optional(),
+    slug: z.string().min(3).max(64).regex(/^[a-z0-9-]+$/, 'lower-case letters, digits and hyphens').optional().describe('URL slug'),
+    is_public: z.boolean().optional(),
+    logo_url: HttpsUrlSchema.nullable().optional().describe('https:// image URL, or null to remove'),
+    accent_color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'hex colour like #0d9488').nullable().optional().describe('Hex colour like #0d9488, or null to remove'),
+    favicon_url: HttpsUrlSchema.nullable().optional().describe('https:// favicon URL, or null to remove (Pro plan)'),
+    show_response_times: z.boolean().optional(),
+    hide_powered_by: z.boolean().optional().describe('Hide the "Powered by SutramX" footer (Pro plan)'),
+} satisfies Record<typeof STATUS_PAGE_SETTINGS[number], z.ZodType>;
+
+const StatusPagePatchSchema = z.object(StatusPageSettingsShape).strict();
+
+/**
+ * The PATCH body for sutramx_update_status_page: named fields over
+ * other_fields, unknown keys refused with the list of accepted ones (the API
+ * would answer 400 for them), values checked like the named fields.
+ */
+export function statusPagePatch(fields: Record<string, unknown>, otherFields?: Record<string, unknown>): Record<string, unknown> {
+    const extra = otherFields || {};
+    const unknown = Object.keys(extra).filter((name) => !(STATUS_PAGE_SETTINGS as readonly string[]).includes(name));
+    if (unknown.length) {
+        throw new Error(`Unknown status page setting${unknown.length === 1 ? '' : 's'}: ${unknown.map((name) => JSON.stringify(name.slice(0, 64))).join(', ')}. The API accepts only: ${STATUS_PAGE_SETTINGS.join(', ')}.`);
+    }
+    const merged = { ...extra, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) };
+    const parsed = StatusPagePatchSchema.safeParse(merged);
+    if (!parsed.success) {
+        throw new Error(`Invalid status page settings: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}`);
+    }
+    const patch = Object.fromEntries(Object.entries(parsed.data).filter(([, value]) => value !== undefined));
+    if (Object.keys(patch).length === 0) throw new Error('Pass at least one field to change');
+    return patch;
+}
+
 export function registerStatusPageTools(server: McpServer, client: SutramXClient): void {
     server.registerTool('sutramx_list_status_pages', {
         title: 'List status pages',
@@ -56,25 +98,18 @@ export function registerStatusPageTools(server: McpServer, client: SutramXClient
 
     server.registerTool('sutramx_update_status_page', {
         title: 'Update status page',
-        description: 'Change a status page\'s settings. Only fields you pass change. Custom domains are managed in the dashboard (owner only).',
+        description: `Change a status page's settings. Only fields you pass change.
+
+Settings the API accepts: ${STATUS_PAGE_SETTINGS.join(', ')}. Any other key is rejected before the API is called. hide_powered_by and favicon_url need the Pro plan (white-label); a 403 WHITE_LABEL_NOT_ENTITLED means the plan does not include it.
+Monitors on the page are changed with sutramx_set_status_page_monitors. Custom domains are managed in the dashboard (owner only).`,
         inputSchema: {
             status_page_id: StatusPageIdSchema,
-            title: z.string().min(1).max(255).optional(),
-            description: z.string().max(1000).nullable().optional(),
-            slug: z.string().min(3).max(64).regex(/^[a-z0-9-]+$/, 'lower-case letters, digits and hyphens').optional().describe('URL slug'),
-            is_public: z.boolean().optional(),
-            logo_url: z.string().max(2048).regex(/^https:\/\//i, 'must be an https:// URL').nullable().optional().describe('https:// image URL, or null to remove'),
-            accent_color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional().describe('Hex colour like #0d9488'),
-            show_response_times: z.boolean().optional(),
-            hide_powered_by: z.boolean().optional().describe('White-label plans only'),
-            other_fields: z.record(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), z.union([z.string().max(2048), z.number(), z.boolean(), z.null()])).optional().describe('Any newer page setting the API accepts (scalar values), passed through as-is'),
+            ...StatusPageSettingsShape,
+            other_fields: z.record(z.string(), z.unknown()).optional().describe(`The same settings as an object, for clients that send them nested. Only these keys are accepted: ${STATUS_PAGE_SETTINGS.join(', ')}; named fields win.`),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ status_page_id, other_fields, ...fields }) => {
-        // Named fields win over other_fields; other_fields cannot smuggle prototype keys.
-        const extra = Object.fromEntries(Object.entries(other_fields || {}).filter(([name]) => name !== '__proto__' && name !== 'constructor' && name !== 'prototype'));
-        const patch = { ...extra, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) };
-        if (Object.keys(patch).length === 0) throw new Error('Pass at least one field to change');
+        const patch = statusPagePatch(fields, other_fields);
         const page = await client.patch<StatusPage>(`/status/pages/${status_page_id}`, patch);
         return ok(page as unknown as Record<string, unknown>, `Status page updated.\n${pageLine(page)}`);
     }));
