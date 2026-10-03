@@ -8,7 +8,7 @@ const STATUSES = ['up', 'down', 'degraded', 'paused', 'pending', 'maintenance'] 
 
 const MonitorIdSchema = z.string().uuid().describe('Monitor id (UUID). Use sutramx_list_monitors to find it.');
 const MonitorKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/, 'letters, digits and . _ : / - (1-128 characters, starting with a letter or digit)');
-const RegionCodeSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,19}$/, 'lower-case region code, e.g. "bom"');
+const RegionCodeSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,19}$/, 'lower-case region code, e.g. "fra1"');
 /** ISO-8601 timestamps only: these go into query strings. */
 export const IsoTimeSchema = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}([T ][0-9:.]+(Z|[+-]\d{2}:?\d{2})?)?$/, 'ISO-8601 time, e.g. 2026-01-31T12:00:00Z');
 
@@ -18,7 +18,7 @@ const MonitorFieldsShape = {
     interval_seconds: z.number().int().min(15).max(900).optional().describe('Seconds between checks (15-900). Plans have a minimum; omit for the plan default.'),
     config: z.record(z.string(), z.unknown()).optional().describe('Type-specific settings, e.g. {"timeout": 10000, "expected_status_codes": [200], "keyword": "ok", "headers": {...}}; ping monitors need {"host": "example.com"}; port/udp monitors {"host": "db.example.com", "port": 5432}; cron monitors {"cron_expression": "*/5 * * * *"}.'),
     tags: z.array(z.string().min(1).max(32).regex(/^[^\u0000-\u001f]+$/)).max(20).optional().describe('Labels, lower-cased (e.g. ["prod", "api"])'),
-    regions: z.array(RegionCodeSchema).min(1).max(50).optional().describe('Probe location codes to check from (e.g. ["bom", "sin", "fra"]). See sutramx_list_regions. Omit for the plan default.'),
+    regions: z.array(RegionCodeSchema).min(1).max(50).optional().describe('Probe location codes to check from (e.g. ["fra1", "usa-az-probe"]). See sutramx_list_regions. Omit for the plan default.'),
 };
 
 export function monitorLine(monitor: Monitor): string {
@@ -221,7 +221,7 @@ Paginate with "before" = next_before from the previous page. status "problem" re
             monitor_id: MonitorIdSchema,
             limit: z.number().int().min(1).max(500).default(50).describe('Rows to return (1-500)'),
             before: IsoTimeSchema.optional().describe('ISO-8601 cursor: only checks before this time (next_before of the previous page)'),
-            region: RegionCodeSchema.optional().describe('Only this region code, e.g. "bom"'),
+            region: RegionCodeSchema.optional().describe('Only this region code, e.g. "fra1"'),
             status: z.enum(['up', 'down', 'degraded', 'problem']).optional().describe('Only checks with this status'),
             response_format: ResponseFormatSchema,
         },
