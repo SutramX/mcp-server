@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.sutramx/mcp-server",
+  "name": "io.github.SutramX/mcp-server",
   "title": "SutramX",
   "description": "SutramX uptime monitoring: monitors, check results, incidents, status pages and uptime/SLO reports.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "websiteUrl": "https://sutramx.com",
   "repository": {
     "url": "https://github.com/sutramx/mcp-server",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@sutramx/mcp-server",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
