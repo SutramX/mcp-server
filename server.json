@@ -3,7 +3,7 @@
   "name": "io.github.SutramX/mcp-server",
   "title": "SutramX",
   "description": "SutramX uptime monitoring: monitors, check results, incidents, status pages and uptime/SLO reports.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "websiteUrl": "https://sutramx.com",
   "repository": {
     "url": "https://github.com/sutramx/mcp-server",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@sutramx/mcp-server",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
