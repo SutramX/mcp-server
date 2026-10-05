@@ -69,7 +69,15 @@ Returns {window_days, overall_uptime_percentage, incident_count, monitors:[{moni
             monitor_id: z.string().uuid().optional().describe('Only this monitor (UUID from sutramx_list_monitors)'),
             response_format: ResponseFormatSchema,
         },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        outputSchema: {
+            window_days: z.number(),
+            overall_uptime_percentage: z.number().nullable(),
+            incident_count: z.number(),
+            monitors: z.array(z.record(z.string(), z.unknown())),
+            slos: z.array(z.record(z.string(), z.unknown())),
+            truncated: z.boolean().optional(),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ days, monitor_id, response_format }) => {
         let normalised: ReliabilityOverview;
         if (monitor_id) {
@@ -108,7 +116,7 @@ Windows can only be created, changed or deleted by a workspace owner in the dash
             status: z.enum(['scheduled', 'ongoing', 'completed', 'cancelled']).optional().describe('Only windows in this effective state'),
             response_format: ResponseFormatSchema,
         },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ status, response_format }) => {
         let items = await client.get<MaintenanceWindow[]>('/maintenance');
         if (status) items = items.filter((window) => (window.effectiveStatus || window.status) === status);

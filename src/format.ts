@@ -12,10 +12,89 @@ function truncate(text: string): string {
     return `${text.slice(0, CHARACTER_LIMIT)}\n\n[Truncated at ${CHARACTER_LIMIT} characters. Use filters, a smaller limit or an offset to see the rest.]`;
 }
 
-/** Tool result with readable text plus structuredContent for programmatic use. */
+/** Longest string kept in structured output; longer ones end in TRUNCATED. */
+export const MAX_STRUCTURED_STRING = 8_000;
+/** Marks a string cut short in structured output; never send it back to the API. */
+export const TRUNCATED = '[TRUNCATED]';
+
+// C0/C1 controls (except tab and line breaks), zero-width characters and
+// bidirectional overrides: they can hide or reorder text an agent reads.
+// eslint-disable-next-line no-control-regex
+const UNSAFE_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+
+function sanitizeValue(value: unknown, depth: number): unknown {
+    if (typeof value === 'string') {
+        const clean = value.replace(UNSAFE_CHARS, '');
+        return clean.length > MAX_STRUCTURED_STRING ? `${clean.slice(0, MAX_STRUCTURED_STRING)}${TRUNCATED}` : clean;
+    }
+    if (value === null || typeof value !== 'object') return value;
+    if (depth > 20) return TRUNCATED;
+    if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, depth + 1));
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key.replace(UNSAFE_CHARS, '').slice(0, 200), sanitizeValue(item, depth + 1)]));
+}
+
+function size(value: unknown): number {
+    return JSON.stringify(value)?.length ?? 0;
+}
+
+/** The longest array in the tree with more than one item, by serialized size. */
+function largestArray(value: unknown): unknown[] | null {
+    let best: unknown[] | null = null;
+    let bestSize = 0;
+    const visit = (node: unknown) => {
+        if (Array.isArray(node)) {
+            if (node.length > 1) {
+                const nodeSize = size(node);
+                if (nodeSize > bestSize) {
+                    best = node;
+                    bestSize = nodeSize;
+                }
+            }
+            node.forEach(visit);
+        } else if (node && typeof node === 'object') {
+            Object.values(node).forEach(visit);
+        }
+    };
+    visit(value);
+    return best;
+}
+
+/**
+ * structuredContent is data from the API (and through it from monitored
+ * sites and other people): sanitized like text output and bounded to
+ * CHARACTER_LIMIT so a huge or hostile response cannot flood the agent.
+ * Oversized results first lose array items from the end (a page shrinks,
+ * "truncated": true is set); if that is not enough only top-level scalars
+ * and empty arrays are kept.
+ */
+export function capStructured(data: Record<string, unknown>, limit = CHARACTER_LIMIT): Record<string, unknown> {
+    const clean = sanitizeValue(data, 0) as Record<string, unknown>;
+    if (size(clean) <= limit) return clean;
+    for (let round = 0; round < 64 && size(clean) > limit; round += 1) {
+        const array = largestArray(clean);
+        if (!array) break;
+        array.splice(Math.max(1, Math.floor(array.length / 2)));
+    }
+    if (size(clean) <= limit) return { ...clean, truncated: true };
+    const scalars = Object.fromEntries(Object.entries(clean)
+        .filter(([, value]) => value === null || typeof value !== 'object' || Array.isArray(value))
+        .map(([key, value]) => [key, Array.isArray(value) ? [] : typeof value === 'string' ? value.slice(0, 500) : value]));
+    return { ...scalars, truncated: true };
+}
+
+/** True when a value read from a truncated structured result is sent back. */
+export function containsTruncated(value: unknown): boolean {
+    if (typeof value === 'string') return value.includes(TRUNCATED);
+    if (Array.isArray(value)) return value.some(containsTruncated);
+    if (value && typeof value === 'object') return Object.values(value).some(containsTruncated);
+    return false;
+}
+
+/** Tool result with readable text plus capped, sanitized structuredContent. */
 export function ok(data: Record<string, unknown>, markdown: string, format: ResponseFormat = 'markdown'): CallToolResult {
-    const text = format === 'json' ? JSON.stringify(data, null, 2) : markdown;
-    return { content: [{ type: 'text', text: truncate(text) }], structuredContent: data };
+    const structured = capStructured(data);
+    const text = format === 'json' ? JSON.stringify(structured, null, 2) : markdown;
+    return { content: [{ type: 'text', text: truncate(text) }], structuredContent: structured };
 }
 
 export function fail(error: unknown): CallToolResult {
@@ -138,7 +217,7 @@ export function containsRedacted(value: unknown): boolean {
  */
 export function untrusted(value: unknown, max = 300): string {
     // eslint-disable-next-line no-control-regex
-    const text = String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const text = String(value ?? '').replace(UNSAFE_CHARS, '').replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
     const bounded = text.length > max ? `${text.slice(0, max)}…` : text;
     return `«${bounded.replace(/[«»]/g, '"')}»`;
 }

@@ -8,7 +8,7 @@ export function registerAccountTools(server: McpServer, client: SutramXClient): 
         title: 'Account and plan',
         description: 'The workspace this API key acts on, its plan and limits (monitors, minimum interval, locations per monitor, status pages) whether the key is read-only and whether it may manage alert channels. Call this first when unsure what the plan allows.',
         inputSchema: { response_format: ResponseFormatSchema },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ response_format }) => {
         const me = await client.get<Record<string, any>>('/automation/whoami');
         const limits = me.limits || {};
@@ -26,7 +26,7 @@ export function registerAccountTools(server: McpServer, client: SutramXClient): 
         title: 'List probe regions',
         description: 'Every SutramX probe location: code (use in a monitor\'s "regions"), city, country, continent and whether it is online. Which codes a monitor may use depends on the plan (see sutramx_whoami).',
         inputSchema: { response_format: ResponseFormatSchema },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ response_format }) => {
         const data = await client.get<{ regions: Region[]; }>('/catalog/regions', undefined, true);
         const regions = data.regions || [];

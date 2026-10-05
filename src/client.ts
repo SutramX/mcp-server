@@ -43,6 +43,27 @@ export interface RequestOptions {
     body?: unknown;
     /** Public endpoints (e.g. /catalog) are called without the key. */
     anonymous?: boolean;
+    /** Largest response body accepted (default MAX_RESPONSE_BYTES). */
+    maxBytes?: number;
+}
+
+/** Reads at most maxBytes of the body, whatever Content-Length claims. */
+async function readBounded(response: Response, maxBytes: number): Promise<string | null> {
+    if (!response.body) return '';
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+            await reader.cancel().catch(() => undefined);
+            return null;
+        }
+        chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString('utf8');
 }
 
 /** The backend answers errors in three shapes; normalise them. */
@@ -96,11 +117,14 @@ export class SutramXClient {
             throw new SutramXApiError(0, `Could not reach the SutramX API at ${this.baseUrl}: ${reason}`);
         }
         if (response.status === 204) return undefined as T;
-        if (Number(response.headers.get('content-length') || 0) > MAX_RESPONSE_BYTES) {
+        const maxBytes = options.maxBytes ?? MAX_RESPONSE_BYTES;
+        const tooLarge = () => new SutramXApiError(response.status, 'Response too large; use filters or a smaller limit');
+        if (Number(response.headers.get('content-length') || 0) > maxBytes) {
             await response.body?.cancel().catch(() => undefined);
-            throw new SutramXApiError(response.status, 'Response too large; use filters or a smaller limit');
+            throw tooLarge();
         }
-        const text = await response.text();
+        const text = await readBounded(response, maxBytes);
+        if (text === null) throw tooLarge();
         let body: unknown = undefined;
         if (text) {
             try {

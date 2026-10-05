@@ -3,8 +3,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import type { NextFunction, Request, Response } from 'express';
+import { createHash } from 'node:crypto';
 import { SutramXClient, validateApiUrl } from './client.js';
-import { policyFromEnv, ToolPolicy, truthy } from './policy.js';
+import { MutationLimiter, mutationLimitsFromEnv, policyForRequest, policyFromEnv, ToolPolicy } from './policy.js';
 import { bearerKey, isAllowedOrigin } from './auth.js';
 import { DEFAULT_API_URL, SERVER_NAME, SERVER_VERSION } from './constants.js';
 import { createSutramXServer } from './server.js';
@@ -20,7 +21,11 @@ import { createSutramXServer } from './server.js';
  *                    while the server listens on loopback, and only for
  *                    requests that send no Authorization header at all.
  *                    Browser requests must come from a loopback origin or
- *                    one in MCP_ALLOWED_ORIGINS.
+ *                    one in MCP_ALLOWED_ORIGINS. Only Bearer API keys are
+ *                    accepted (no OAuth); see README "Hosted HTTP mode".
+ *
+ * The API base URL comes only from SUTRAMX_API_URL (operator env), never from
+ * a request or a tool argument.
  */
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -30,7 +35,7 @@ function apiUrl(): string {
 }
 
 function describePolicy(policy: ToolPolicy): string {
-    return policy.readOnly ? 'read-only' : policy.allowDestructive ? 'read-write, deletes enabled' : 'read-write, deletes disabled';
+    return policy.readOnly ? 'read-only' : policy.allowDestructive ? 'read-write, destructive mode ON' : 'read-write, destructive mode off';
 }
 
 function startupChecks(): void {
@@ -57,13 +62,30 @@ function requireEnvKey(): string {
 async function runStdio(): Promise<void> {
     startupChecks();
     const policy = policyFromEnv();
-    const server = createSutramXServer(new SutramXClient(requireEnvKey(), apiUrl()), policy);
+    const server = createSutramXServer(new SutramXClient(requireEnvKey(), apiUrl()), policy, new MutationLimiter(mutationLimitsFromEnv()));
     await server.connect(new StdioServerTransport());
     console.error(`${SERVER_NAME} ${SERVER_VERSION} running on stdio (API ${apiUrl()}, ${describePolicy(policy)})`);
 }
 
 function jsonRpcError(res: Response, status: number, message: string, code = -32001): void {
     res.status(status).json({ jsonrpc: '2.0', error: { code, message }, id: null });
+}
+
+/** Mutation limits per API key: HTTP is stateless, so the key is the session. */
+const MAX_TRACKED_KEYS = 10_000;
+const limiters = new Map<string, MutationLimiter>();
+
+function limiterFor(key: string): MutationLimiter {
+    const id = createHash('sha256').update(key).digest('hex');
+    let limiter = limiters.get(id);
+    if (limiter) {
+        limiters.delete(id); // re-insert: most recently used last
+    } else {
+        limiter = new MutationLimiter(mutationLimitsFromEnv());
+        if (limiters.size >= MAX_TRACKED_KEYS) limiters.delete(limiters.keys().next().value!);
+    }
+    limiters.set(id, limiter);
+    return limiter;
 }
 
 function csv(value: string | undefined): string[] {
@@ -102,14 +124,11 @@ async function runHttp(): Promise<void> {
             res.setHeader('WWW-Authenticate', 'Bearer realm="sutramx"');
             return jsonRpcError(res, 401, 'Send your SutramX API key as "Authorization: Bearer sk_..."');
         }
-        // Per request, the user's client config may narrow (read-only) or opt
-        // into deletes; the server env can force read-only for everyone.
-        const policy: ToolPolicy = {
-            readOnly: serverPolicy.readOnly || truthy(req.headers['x-sutramx-read-only']),
-            allowDestructive: serverPolicy.allowDestructive || truthy(req.headers['x-sutramx-allow-destructive']),
-        };
+        // Per request, the client config may narrow to read-only; it may opt
+        // into destructive mode only if the operator allowed that by env.
+        const policy = policyForRequest(serverPolicy, req.headers);
         // Stateless: a fresh server + transport per request keeps users isolated.
-        const server = createSutramXServer(new SutramXClient(key, apiUrl()), policy);
+        const server = createSutramXServer(new SutramXClient(key, apiUrl()), policy, limiterFor(key));
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
         res.on('close', () => {
             void transport.close();

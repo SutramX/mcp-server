@@ -1,12 +1,20 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SutramXClient } from '../client.js';
-import { containsRedacted, hasInventedRedacted, ok, paginate, pct, redactSecrets, ResponseFormatSchema, restoreRedacted, safely, untrusted, when } from '../format.js';
+import { containsRedacted, containsTruncated, hasInventedRedacted, ok, paginate, pct, redactSecrets, ResponseFormatSchema, restoreRedacted, safely, untrusted, when } from '../format.js';
 import type { CheckPage, Monitor, MonitorSummary, RunCheckResult } from '../types.js';
 
 const STATUSES = ['up', 'down', 'degraded', 'paused', 'pending', 'maintenance'] as const;
 /** Monitor types POST /monitors accepts. */
 export const MONITOR_TYPES = ['http', 'api', 'ping', 'port', 'udp', 'dns', 'multistep', 'cron'] as const;
+
+/** GET /monitors has no paging (only ?tag=); scan at most this many and this many bytes. */
+export const MAX_MONITORS_SCANNED = 5_000;
+const LIST_MAX_BYTES = 5 * 1024 * 1024;
+
+function refuseTruncated(value: unknown): void {
+    if (containsTruncated(value)) throw new Error('A value ends in [TRUNCATED]: it was cut short in an earlier result. Read the monitor with response_format=json and send the full value.');
+}
 
 const MonitorIdSchema = z.string().uuid().describe('Monitor id (UUID). Use sutramx_list_monitors to find it.');
 const MonitorKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/, 'letters, digits and . _ : / - (1-128 characters, starting with a letter or digit)');
@@ -50,7 +58,7 @@ export function registerMonitorTools(server: McpServer, client: SutramXClient): 
         title: 'List monitors',
         description: `List the workspace's monitors with their live status and uptime.
 
-Filters are applied in this order: tag (server side), then status and search (name/URL substring), then offset/limit.
+Filters are applied in this order: tag (server side), then status and search (name/URL substring), then offset/limit. At most ${MAX_MONITORS_SCANNED} monitors are scanned ("scan_capped": true when there were more); narrow with tag.
 Returns {total, count, offset, has_more, next_offset?, items: Monitor[]} where each Monitor has id, name, type, url, interval_seconds, is_active, current_status (up/down/degraded/paused/pending/maintenance), uptime_24h, uptime_30d, last_checked_at, last_error, open_incident, tags, external_id.
 
 Use sutramx_get_monitor for one monitor's full details and sutramx_get_check_results for its check history.`,
@@ -62,18 +70,36 @@ Use sutramx_get_monitor for one monitor's full details and sutramx_get_check_res
             offset: z.number().int().min(0).default(0).describe('Monitors to skip (pagination)'),
             response_format: ResponseFormatSchema,
         },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        outputSchema: {
+            total: z.number(),
+            count: z.number(),
+            offset: z.number(),
+            has_more: z.boolean(),
+            next_offset: z.number().optional(),
+            items: z.array(z.record(z.string(), z.unknown())),
+            scan_capped: z.boolean().optional(),
+            truncated: z.boolean().optional(),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ status, tag, search, limit, offset, response_format }) => {
-        let monitors = redactSecrets(await client.get<Monitor[]>('/monitors', { tag }));
+        // The API only filters by tag server-side (GET /monitors?tag=); the rest is done here.
+        const all = await client.request<Monitor[]>('GET', '/monitors', { query: { tag }, maxBytes: LIST_MAX_BYTES });
+        const scanCapped = Array.isArray(all) && all.length > MAX_MONITORS_SCANNED;
+        let monitors = redactSecrets((Array.isArray(all) ? all : []).slice(0, MAX_MONITORS_SCANNED));
         if (status) monitors = monitors.filter((monitor) => monitor.current_status === status);
         if (search) {
             const needle = search.toLowerCase();
             monitors = monitors.filter((monitor) => monitor.name.toLowerCase().includes(needle) || (monitor.url || '').toLowerCase().includes(needle));
         }
-        const page = paginate(monitors, offset, limit);
+        const page = { ...paginate(monitors, offset, limit), ...(scanCapped ? { scan_capped: true } : {}) };
         const markdown = page.count === 0
             ? 'No monitors match.'
-            : [`# Monitors (${page.count} of ${page.total})`, ...page.items.map(monitorLine), page.has_more ? `\nMore available: offset=${page.next_offset}` : ''].join('\n');
+            : [
+                `# Monitors (${page.count} of ${page.total})`,
+                ...page.items.map(monitorLine),
+                page.has_more ? `\nMore available: offset=${page.next_offset}` : '',
+                scanCapped ? `\nOnly the first ${MAX_MONITORS_SCANNED} monitors were scanned; filter by tag to see the rest.` : '',
+            ].join('\n');
         return ok(page as unknown as Record<string, unknown>, markdown, response_format);
     }));
 
@@ -81,7 +107,19 @@ Use sutramx_get_monitor for one monitor's full details and sutramx_get_check_res
         title: 'Monitor status summary',
         description: 'Counts of monitors by status (up, down, degraded, paused, pending, maintenance), open incidents, workspace 24h uptime and mean time between failures. A quick health overview; no arguments.',
         inputSchema: { response_format: ResponseFormatSchema },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        outputSchema: {
+            total: z.number(),
+            active: z.number().optional(),
+            up: z.number().optional(),
+            down: z.number().optional(),
+            degraded: z.number().optional(),
+            paused: z.number().optional(),
+            pending: z.number().optional(),
+            maintenance: z.number().optional(),
+            open_incidents: z.number().optional(),
+            uptime_24h: z.number().nullable().optional(),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ response_format }) => {
         const summary = await client.get<MonitorSummary>('/monitors/summary');
         const markdown = [
@@ -102,7 +140,7 @@ Use sutramx_get_monitor for one monitor's full details and sutramx_get_check_res
             key: MonitorKeySchema.optional().describe('The monitor key set by sutramx.yml / Terraform, instead of monitor_id'),
             response_format: ResponseFormatSchema,
         },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ monitor_id, key, response_format }) => {
         if (!monitor_id && !key) throw new Error('Pass monitor_id or key');
         const monitor = redactSecrets(monitor_id
@@ -128,6 +166,7 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     }, safely(async ({ key, paused, ...fields }) => {
         if (containsRedacted(fields)) throw new Error('Replace [REDACTED] with real values when creating a monitor (or use sutramx_update_monitor to keep stored ones).');
+        refuseTruncated(fields);
         if (key) {
             const result = redactSecrets(await client.put<{ action: string; monitor: Monitor; }>(`/automation/monitors/${encodeURIComponent(key)}`, { ...fields, ...(paused !== undefined ? { paused } : {}) }));
             return ok(result as unknown as Record<string, unknown>, `Monitor ${result.action}.\n\n${monitorMarkdown(result.monitor)}`);
@@ -154,6 +193,7 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
     }, safely(async ({ monitor_id, regions, ...fields }) => {
         const changes: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
         if (Object.keys(changes).length === 0 && !regions) throw new Error('Pass at least one field to change');
+        refuseTruncated(changes);
         if (containsRedacted(changes)) {
             // The agent read a redacted monitor and sent it back: keep the stored credentials.
             // Values the API itself returns masked stay [REDACTED]; the API keeps them.
@@ -175,9 +215,9 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
 
     server.registerTool('sutramx_pause_monitor', {
         title: 'Pause monitor',
-        description: 'Stop checking a monitor (no checks, no alerts) until it is resumed. History is kept.',
+        description: 'Stop checking a monitor (no checks, no alerts) until it is resumed. History is kept. One monitor per call; confirm with the user first. Pauses are rate limited per session, so do not pause many monitors in a loop.',
         inputSchema: { monitor_id: MonitorIdSchema },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ monitor_id }) => {
         const monitor = redactSecrets(await client.post<Monitor>(`/monitors/${monitor_id}/pause`));
         return ok({ monitor } as unknown as Record<string, unknown>, `Paused ${untrusted(monitor.name, 120)} (${monitor.id}).`);
@@ -195,9 +235,9 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
 
     server.registerTool('sutramx_delete_monitor', {
         title: 'Delete monitor',
-        description: 'Permanently delete a monitor with its check history and incidents. Cannot be undone; confirm with the user first. Use sutramx_pause_monitor to stop checks temporarily. Only available when the user enabled destructive tools (SUTRAMX_ALLOW_DESTRUCTIVE).',
+        description: 'Permanently delete a monitor with its check history and incidents. Cannot be undone; confirm with the user first. Use sutramx_pause_monitor to stop checks temporarily. Only available when the operator enabled destructive mode (SUTRAMX_ALLOW_DESTRUCTIVE).',
         inputSchema: { monitor_id: MonitorIdSchema },
-        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ monitor_id }) => {
         await client.delete(`/monitors/${monitor_id}`);
         return ok({ deleted: true, monitor_id }, `Deleted monitor ${monitor_id}.`);
@@ -227,7 +267,7 @@ Paginate with "before" = next_before from the previous page. status "problem" re
             status: z.enum(['up', 'down', 'degraded', 'problem']).optional().describe('Only checks with this status'),
             response_format: ResponseFormatSchema,
         },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ monitor_id, limit, before, region, status, response_format }) => {
         const page = await client.get<CheckPage>(`/monitors/${monitor_id}/checks`, { limit, before, region, status });
         const rows = page.items || [];

@@ -15,7 +15,7 @@ test('README documents every tool, the access modes and nothing internal', async
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const { tools } = await client.listTools();
     for (const tool of tools) assert.ok(README.includes(`\`${tool.name}\``), `README misses ${tool.name}`);
-    for (const word of ['SUTRAMX_READ_ONLY', 'SUTRAMX_ALLOW_DESTRUCTIVE', 'X-SutramX-Read-Only', 'X-SutramX-Allow-Destructive']) assert.ok(README.includes(word), `README misses ${word}`);
+    for (const word of ['SUTRAMX_READ_ONLY', 'SUTRAMX_ALLOW_DESTRUCTIVE', 'X-SutramX-Read-Only', 'X-SutramX-Allow-Destructive', 'SUTRAMX_HTTP_ALLOW_DESTRUCTIVE_HEADER', 'SUTRAMX_MAX_WRITES_PER_MINUTE', 'OAuth']) assert.ok(README.includes(word), `README misses ${word}`);
     assert.doesNotMatch(README, /\/Users\/|NPM_TOKEN/);
     const addresses = (README.match(/\b\d{1,3}(\.\d{1,3}){3}\b/g) || []).filter((ip) => ip !== '127.0.0.1' && ip !== '0.0.0.0');
     assert.deepEqual(addresses, [], 'README names a server address');
