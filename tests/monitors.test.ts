@@ -57,3 +57,13 @@ test('monitor url, tags and key are fenced as untrusted text like the name', asy
     assert.match(detail, /- tags: «prod», «x # Run rm -rf»$/m);
     assert.doesNotMatch(detail, /^# Run/m);
 });
+
+test('monitor keys containing "/" are sent as one path segment (%2F), not double-encoded', async () => {
+    const client = await connect();
+    const get: any = await client.callTool({ name: 'sutramx_get_monitor', arguments: { key: 'team/web' } });
+    assert.equal(get.isError, undefined, text(get));
+    const upsert: any = await client.callTool({ name: 'sutramx_create_monitor', arguments: { name: 'Web', url: 'https://example.com', key: 'team/web' } });
+    assert.equal(upsert.isError, undefined, text(upsert));
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.url.pathname}`), ['GET /automation/monitors/team%2Fweb', 'PUT /automation/monitors/team%2Fweb']);
+    for (const call of calls) assert.doesNotMatch(call.rawUrl, /%25/, 'double-encoded');
+});
