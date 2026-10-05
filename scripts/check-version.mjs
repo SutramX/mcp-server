@@ -1,14 +1,26 @@
 #!/usr/bin/env node
-// Release guard: the tag (argv[2] or GITHUB_REF_NAME, "v1.2.3") must match
-// package.json, src/constants.ts SERVER_VERSION and both versions in
-// server.json; mcpName must match the MCP Registry name. Without a tag,
-// only checks that all files agree.
+// Release guard: the tag (argv[2], "v1.2.3") must match package.json,
+// src/constants.ts SERVER_VERSION and both versions in server.json; mcpName
+// must match the MCP Registry name. Without a tag, only checks that all files
+// agree (CI on push / pull_request). GITHUB_REF_NAME is used only when the
+// workflow runs for a version tag (GITHUB_REF_TYPE=tag): on a branch it is
+// "main" or "12/merge", not a version.
 import { readFileSync } from 'node:fs';
+
+const VERSION_TAG = /^v?\d+\.\d+\.\d+/;
+
+function releaseTag() {
+    const explicit = (process.argv[2] || '').trim();
+    if (explicit) return explicit;
+    const ref = (process.env.GITHUB_REF_NAME || '').trim();
+    if (process.env.GITHUB_REF_TYPE === 'tag' && VERSION_TAG.test(ref)) return ref;
+    return '';
+}
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const server = JSON.parse(readFileSync('server.json', 'utf8'));
 const constants = /SERVER_VERSION = '([^']+)'/.exec(readFileSync('src/constants.ts', 'utf8'))?.[1];
-const tag = (process.argv[2] || process.env.GITHUB_REF_NAME || '').replace(/^v/, '');
+const tag = releaseTag().replace(/^v/, '');
 
 const versions = {
     'package.json version': pkg.version,
