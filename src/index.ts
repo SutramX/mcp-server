@@ -6,7 +6,8 @@ import type { NextFunction, Request, Response } from 'express';
 import { createHash } from 'node:crypto';
 import { SutramXClient, validateApiUrl } from './client.js';
 import { MutationLimiter, mutationLimitsFromEnv, policyForRequest, policyFromEnv, ToolPolicy } from './policy.js';
-import { bearerKey, isAllowedOrigin } from './auth.js';
+import { isAllowedOrigin } from './auth.js';
+import { bearerChallenge, bearerCredential, checkOAuthToken, oauthResourceConfig, protectedResourceMetadata, RESOURCE_PROOF_HEADER, resourceMetadataPaths, type Credential } from './oauth.js';
 import { DEFAULT_API_URL, SERVER_NAME, SERVER_VERSION } from './constants.js';
 import { createSutramXServer } from './server.js';
 
@@ -21,8 +22,14 @@ import { createSutramXServer } from './server.js';
  *                    while the server listens on loopback, and only for
  *                    requests that send no Authorization header at all.
  *                    Browser requests must come from a loopback origin or
- *                    one in MCP_ALLOWED_ORIGINS. Only Bearer API keys are
- *                    accepted (no OAuth); see README "Hosted HTTP mode".
+ *                    one in MCP_ALLOWED_ORIGINS.
+ *                    Remote clients without a key (e.g. Claude.ai custom
+ *                    connectors) sign in with OAuth 2.1 instead: a request
+ *                    without credentials gets 401 + WWW-Authenticate pointing
+ *                    at /.well-known/oauth-protected-resource, which names
+ *                    the SutramX API as authorization server; the resulting
+ *                    access token (sxo_at_...) is checked with the API and
+ *                    limited to the scopes the user granted (see oauth.ts).
  *
  * The API base URL comes only from SUTRAMX_API_URL (operator env), never from
  * a request or a tool argument.
@@ -105,7 +112,24 @@ async function runHttp(): Promise<void> {
         console.error('SUTRAMX_API_KEY is ignored when HOST is not loopback: every request must send its own Authorization: Bearer sk_... header.');
     }
 
+    const oauth = oauthResourceConfig(apiUrl());
     const app = createMcpExpressApp({ host, ...(allowedHosts?.length ? { allowedHosts } : {}) });
+
+    // RFC 9728 metadata: public, any origin (browser-based MCP clients read it).
+    const metadata = protectedResourceMetadata(oauth);
+    for (const path of resourceMetadataPaths(oauth.resource)) {
+        app.options(path, (_req: Request, res: Response) => {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', 'MCP-Protocol-Version');
+            res.status(204).end();
+        });
+        app.get(path, (_req: Request, res: Response) => {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Cache-Control', 'public, max-age=3600');
+            res.json(metadata);
+        });
+    }
 
     app.use((req: Request, res: Response, next: NextFunction) => {
         if (isAllowedOrigin(req.headers.origin, allowedOrigins)) return next();
@@ -117,18 +141,35 @@ async function runHttp(): Promise<void> {
     });
 
     app.post('/mcp', async (req: Request, res: Response) => {
-        // An Authorization header that is not a SutramX key is rejected, never
-        // replaced by the server's own key.
-        const key = req.headers.authorization !== undefined ? bearerKey(req.headers.authorization) : envKey;
-        if (!key) {
-            res.setHeader('WWW-Authenticate', 'Bearer realm="sutramx"');
-            return jsonRpcError(res, 401, 'Send your SutramX API key as "Authorization: Bearer sk_..."');
+        // An Authorization header that is not a SutramX key or OAuth access
+        // token is rejected, never replaced by the server's own key.
+        const sent = req.headers.authorization;
+        const credential: Credential | null = sent !== undefined ? bearerCredential(sent) : envKey ? { kind: 'api_key', token: envKey } : null;
+        if (!credential) {
+            res.setHeader('WWW-Authenticate', bearerChallenge(oauth, sent !== undefined ? { error: 'invalid_token', error_description: 'Unrecognised credential' } : {}));
+            return jsonRpcError(res, 401, 'Sign in to SutramX (OAuth), or send your SutramX API key as "Authorization: Bearer sk_..."');
         }
         // Per request, the client config may narrow to read-only; it may opt
         // into destructive mode only if the operator allowed that by env.
-        const policy = policyForRequest(serverPolicy, req.headers);
-        // Stateless: a fresh server + transport per request keeps users isolated.
-        const server = createSutramXServer(new SutramXClient(key, apiUrl()), policy, limiterFor(key));
+        let policy: ToolPolicy = policyForRequest(serverPolicy, req.headers);
+        const authHeaders: Record<string, string> = {};
+        if (credential.kind === 'oauth') {
+            // Audience + liveness check before any tool runs (MCP spec: the
+            // server validates tokens were issued for it; invalid → 401).
+            const check = await checkOAuthToken(credential.token, apiUrl(), oauth);
+            if (!check.ok) {
+                if (check.status === 401) {
+                    res.setHeader('WWW-Authenticate', bearerChallenge(oauth, { error: 'invalid_token', error_description: check.description }));
+                }
+                return jsonRpcError(res, check.status, check.description);
+            }
+            // No write scope (or the user's role is now view-only): read tools only.
+            if (check.info.readOnly) policy = { ...policy, readOnly: true };
+            if (oauth.resourceProofSecret) authHeaders[RESOURCE_PROOF_HEADER] = oauth.resourceProofSecret;
+        }
+        // Stateless: a fresh server + transport per request keeps users isolated;
+        // mutations are rate-limited per credential.
+        const server = createSutramXServer(new SutramXClient(credential.token, apiUrl(), authHeaders), policy, limiterFor(credential.token));
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
         res.on('close', () => {
             void transport.close();
