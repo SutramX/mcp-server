@@ -68,7 +68,12 @@ export function parseErrorBody(status: number, body: unknown): SutramXApiError {
 export class SutramXClient {
     readonly baseUrl: string;
 
-    constructor(private readonly apiKey: string, baseUrl: string = DEFAULT_API_URL) {
+    /**
+     * `apiKey` is a SutramX API key (sk_…) or, in HTTP mode, an OAuth access
+     * token (sxo_at_…) issued for this MCP server. `authHeaders` are sent
+     * with it (never on anonymous calls).
+     */
+    constructor(private readonly apiKey: string, baseUrl: string = DEFAULT_API_URL, private readonly authHeaders: Record<string, string> = {}) {
         this.baseUrl = validateApiUrl(baseUrl);
     }
 
@@ -78,7 +83,10 @@ export class SutramXClient {
             if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
         }
         const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': USER_AGENT };
-        if (!options.anonymous) headers.Authorization = `Bearer ${this.apiKey}`;
+        if (!options.anonymous) {
+            Object.assign(headers, this.authHeaders);
+            headers.Authorization = `Bearer ${this.apiKey}`;
+        }
         if (options.body !== undefined) headers['Content-Type'] = 'application/json';
 
         let response: Response;
@@ -141,6 +149,9 @@ export function describeApiError(error: unknown): string {
     const hint = (() => {
         if (error.status === 0) return 'Check SUTRAMX_API_URL and your network connection.';
         if (error.status === 401) return 'The API key is missing, wrong, revoked or disabled. Create a key in SutramX → Settings → API keys.';
+        if (error.code === 'OAUTH_SCOPE_REQUIRED') return 'The user did not give this app that permission when connecting it. Tell the user; they can reconnect the SutramX connector and tick it. Do not retry.';
+        if (error.code === 'OAUTH_ENDPOINT_NOT_ALLOWED') return 'Apps connected with OAuth can only use monitors, incidents and status pages. Do not retry.';
+        if (error.code === 'OAUTH_INVALID_TOKEN') return 'The connection to SutramX expired or was revoked; the user must reconnect it.';
         if (error.code === 'READ_ONLY_ACCESS') return 'This API key is read-only, so it cannot change anything. Tell the user; do not retry. A workspace owner can create a standard key if changes are really needed.';
         if (error.code === 'AUTOMATION_KEY_REQUIRED') return 'Use an API key created with "Automation access".';
         if (error.code === 'FEATURE_NOT_AVAILABLE' || error.code === 'ENTITLEMENT_LIMIT_REACHED') return 'This needs a higher plan or fewer resources; tell the user rather than retrying.';
