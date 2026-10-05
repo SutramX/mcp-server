@@ -126,6 +126,14 @@ claude mcp add --transport http sutramx http://127.0.0.1:3333/mcp \
 
 When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_API_KEY` is used for requests that send no `Authorization` header (a header that is not a SutramX key is rejected with 401). Browser requests are only accepted from a loopback `Origin` or one listed in `MCP_ALLOWED_ORIGINS`. With any other `HOST` the environment key is ignored, and you should put the server behind HTTPS. Set `MCP_ALLOWED_HOSTS` (comma-separated host names) to keep DNS-rebinding protection when binding to `0.0.0.0`. `GET /health` returns the server version.
 
+### Hosted server with OAuth (Claude.ai and other remote clients)
+
+The hosted server at `https://api.sutramx.com/mcp` also accepts OAuth 2.1, so clients that cannot store an API key (for example a Claude.ai custom connector) only need the URL. On the first request without credentials the server answers `401` with `WWW-Authenticate: Bearer resource_metadata="https://api.sutramx.com/.well-known/oauth-protected-resource/mcp"`; the client registers itself (dynamic client registration), sends you to SutramX to approve, and gets an access token (PKCE S256, resource indicator `https://api.sutramx.com/mcp`).
+
+On the consent page you pick the workspace and the permissions: `monitors:read`, `incidents:read`, `status_pages:read` (on by default) and `monitors:write`, `incidents:write`, `status_pages:write` (off unless you tick them; workspace viewers can only grant read). A token without a write scope gets only the read tools. Delete tools stay off unless the client sends `X-SutramX-Allow-Destructive: true`. OAuth tokens can never manage API keys, team members, billing, SSO or account settings. Access tokens last one hour and are refreshed automatically; revoke an app any time in SutramX → Settings → Authorized apps.
+
+Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public URL of your `/mcp` endpoint and `MCP_AUTHORIZATION_SERVER` to your SutramX API, and serve `/.well-known/oauth-protected-resource*` from this server.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -137,6 +145,9 @@ When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_AP
 | `MCP_ALLOWED_HOSTS` | (none) | Allowed `Host` headers when not on loopback |
 | `SUTRAMX_READ_ONLY` | `false` | Register only read tools |
 | `SUTRAMX_ALLOW_DESTRUCTIVE` | `false` | Register the delete tools |
+| `MCP_RESOURCE_URL` | `<SUTRAMX_API_URL>/mcp` | HTTP + OAuth: canonical URL of this `/mcp` endpoint (token audience) |
+| `MCP_AUTHORIZATION_SERVER` | `SUTRAMX_API_URL` | HTTP + OAuth: issuer named in the protected-resource metadata |
+| `OAUTH_RESOURCE_PROXY_SECRET` | (none) | HTTP + OAuth: sent to the API with OAuth tokens when the API requires it |
 | `MCP_ALLOWED_ORIGINS` | (none) | Extra browser origins allowed to call `/mcp` (comma-separated, e.g. `https://app.example.com`); requests without `Origin` are always allowed |
 
 ## Notes
