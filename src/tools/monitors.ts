@@ -33,22 +33,22 @@ const MonitorFieldsShape = {
 
 export function monitorLine(monitor: Monitor): string {
     const status = monitor.current_status || (monitor.is_active ? 'pending' : 'paused');
-    const target = monitor.url ? ` ${monitor.url}` : '';
-    const key = monitor.external_id ? ` key=${monitor.external_id}` : '';
+    const target = monitor.url ? ` ${untrusted(monitor.url, 200)}` : '';
+    const key = monitor.external_id ? ` key=${untrusted(monitor.external_id, 128)}` : '';
     return `- **${untrusted(monitor.name, 120)}** (${monitor.id}) [${monitor.type}] ${status.toUpperCase()}${target} · every ${monitor.interval_seconds}s · 24h ${pct(monitor.uptime_24h)}${key}`;
 }
 
 function monitorMarkdown(monitor: Monitor): string {
     const lines = [
         `# ${untrusted(monitor.name, 255)}`,
-        `- id: ${monitor.id}${monitor.external_id ? ` (key: ${monitor.external_id})` : ''}`,
-        `- type: ${monitor.type}${monitor.url ? ` · target: ${monitor.url}` : ''}`,
+        `- id: ${monitor.id}${monitor.external_id ? ` (key: ${untrusted(monitor.external_id, 128)})` : ''}`,
+        `- type: ${monitor.type}${monitor.url ? ` · target: ${untrusted(monitor.url, 2048)}` : ''}`,
         `- status: ${monitor.current_status ?? (monitor.is_active ? 'active' : 'paused')}${monitor.open_incident ? ` · open incident ${monitor.open_incident.id} since ${when(monitor.open_incident.started_at)}` : ''}`,
         `- interval: ${monitor.interval_seconds}s · regions: ${(monitor.effective_regions || monitor.probe_regions || []).join(', ') || 'plan default'}`,
         `- uptime: 24h ${pct(monitor.uptime_24h)} · 30d ${pct(monitor.uptime_30d)}`,
         `- last check: ${when(monitor.last_checked_at)}${monitor.last_status ? ` (${monitor.last_status}${monitor.last_response_time_ms != null ? `, ${monitor.last_response_time_ms} ms` : ''})` : ''}${monitor.last_error ? ` · error: ${untrusted(monitor.last_error)}` : ''}`,
     ];
-    if (monitor.tags?.length) lines.push(`- tags: ${monitor.tags.join(', ')}`);
+    if (monitor.tags?.length) lines.push(`- tags: ${monitor.tags.map((tag) => untrusted(tag, 32)).join(', ')}`);
     if (monitor.heartbeat_url) lines.push(`- heartbeat URL: ${monitor.heartbeat_url}`);
     return lines.join('\n');
 }
