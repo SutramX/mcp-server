@@ -32,6 +32,7 @@ beforeEach(() => {
         if (url.pathname === `/monitors/${MONITOR_ID}` && method === 'PUT') return json(200, { ...MONITOR, ...body });
         if (url.pathname === `/monitors/${MONITOR_ID}/pause`) return json(200, { ...MONITOR, is_active: false });
         if (url.pathname === '/status/pages' && method === 'POST') return json(201, { id: PAGE_ID, slug: 'acme', ...body });
+        if (url.pathname === `/status/pages/${PAGE_ID}` && method === 'GET') return json(200, { id: PAGE_ID, title: 'Acme', slug: 'acme', is_public: false });
         if (url.pathname === `/status/pages/${PAGE_ID}` && method === 'PATCH') return json(200, { id: PAGE_ID, title: 'Acme', slug: 'acme', is_public: true, ...body });
         if (url.pathname === `/status/pages/${PAGE_ID}/monitors`) return json(200, { ok: true });
         if (url.pathname === `/incidents/${INCIDENT_ID}/notes`) return json(201, { note: { id: 'n1', ...body } });
@@ -107,6 +108,7 @@ test('status pages: publishing, unpublishing and slug changes need destructive m
     }
     assert.equal(calls.length, 0);
 
+    // The page is not public (see the GET mock), so its title may change.
     const title: any = await client.callTool({ name: 'sutramx_update_status_page', arguments: { status_page_id: PAGE_ID, title: 'Acme' } });
     assert.equal(title.isError, undefined, text(title));
 

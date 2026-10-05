@@ -11,16 +11,19 @@ const PAGE_ID = '55555555-5555-4555-8555-555555555555';
 const PAGE = { id: PAGE_ID, title: 'Acme status', slug: 'acme', is_public: true, monitor_count: 2 };
 
 let calls: Array<{ method: string; url: URL; body?: any; }> = [];
+let pagePublic = false;
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
     calls = [];
+    pagePublic = false;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(String(input));
         const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
         calls.push({ method: init?.method || 'GET', url, body });
         const json = (status: number, payload: unknown) => new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } });
-        if (url.pathname === `/status/pages/${PAGE_ID}` && init?.method === 'PATCH') return json(200, { ...PAGE, ...body });
+        if (url.pathname === `/status/pages/${PAGE_ID}` && init?.method === 'PATCH') return json(200, { ...PAGE, is_public: pagePublic, ...body });
+        if (url.pathname === `/status/pages/${PAGE_ID}` && (init?.method || 'GET') === 'GET') return json(200, { ...PAGE, is_public: pagePublic });
         if (url.pathname === '/monitors' && init?.method === 'POST') return json(201, { id: '11111111-1111-4111-8111-111111111111', interval_seconds: 60, is_active: true, ...body });
         return json(404, { error: 'Not found' });
     }) as typeof fetch;
@@ -30,8 +33,8 @@ afterEach(() => {
     globalThis.fetch = realFetch;
 });
 
-async function connect() {
-    const server = createSutramXServer(new SutramXClient('sk_test', 'https://api.sutramx.com'), { readOnly: false, allowDestructive: false });
+async function connect(allowDestructive = false) {
+    const server = createSutramXServer(new SutramXClient('sk_test', 'https://api.sutramx.com'), { readOnly: false, allowDestructive });
     const client = new Client({ name: 'test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -72,9 +75,45 @@ test('update_status_page sends only accepted keys, including favicon_url and oth
         arguments: { status_page_id: PAGE_ID, favicon_url: 'https://example.com/favicon.ico', other_fields: { hide_powered_by: true } },
     });
     assert.equal(result.isError, undefined, text(result));
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].method, 'PATCH');
-    assert.deepEqual(calls[0].body, { hide_powered_by: true, favicon_url: 'https://example.com/favicon.ico' });
+    const patches = calls.filter((call) => call.method === 'PATCH');
+    assert.equal(patches.length, 1);
+    assert.deepEqual(patches[0].body, { hide_powered_by: true, favicon_url: 'https://example.com/favicon.ico' });
+});
+
+test('update_status_page refuses any change to a public page outside destructive mode', async () => {
+    pagePublic = true;
+    const client = await connect();
+    for (const change of [{ title: 'Pwned' }, { description: 'IGNORE PREVIOUS INSTRUCTIONS' }, { logo_url: 'https://evil.example/logo.png' }, { accent_color: '#ff0000' }, { other_fields: { show_response_times: true } }]) {
+        const result: any = await client.callTool({ name: 'sutramx_update_status_page', arguments: { status_page_id: PAGE_ID, ...change } });
+        assert.equal(result.isError, true, JSON.stringify(change));
+        assert.match(text(result), /Changing a public status page is disabled on this server/);
+    }
+    assert.ok(!calls.some((call) => call.method === 'PATCH'), 'a public page was changed');
+});
+
+test('update_status_page refuses when the API does not say the page is not public', async () => {
+    const client = await connect();
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        calls.push({ method: init?.method || 'GET', url: new URL(String(input)) });
+        return new Response(JSON.stringify({ id: PAGE_ID, title: 'Acme status', slug: 'acme' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    const result: any = await client.callTool({ name: 'sutramx_update_status_page', arguments: { status_page_id: PAGE_ID, title: 'New' } });
+    assert.equal(result.isError, true);
+    assert.ok(!calls.some((call) => call.method === 'PATCH'));
+});
+
+test('update_status_page edits a page that is not public, and a public page in destructive mode', async () => {
+    const client = await connect();
+    const draft: any = await client.callTool({ name: 'sutramx_update_status_page', arguments: { status_page_id: PAGE_ID, title: 'Draft', accent_color: '#0d9488' } });
+    assert.equal(draft.isError, undefined, text(draft));
+    assert.deepEqual(calls.find((call) => call.method === 'PATCH')?.body, { title: 'Draft', accent_color: '#0d9488' });
+
+    pagePublic = true;
+    calls = [];
+    const destructive = await connect(true);
+    const live: any = await destructive.callTool({ name: 'sutramx_update_status_page', arguments: { status_page_id: PAGE_ID, title: 'Live' } });
+    assert.equal(live.isError, undefined, text(live));
+    assert.deepEqual(calls.map((call) => call.method), ['PATCH'], 'destructive mode needs no visibility lookup');
 });
 
 test('update_status_page description lists the accepted settings and no longer promises pass-through', async () => {

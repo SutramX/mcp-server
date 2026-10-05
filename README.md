@@ -23,7 +23,7 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_resolve_incident` | Resolve by hand with a note | yes |
 | `sutramx_add_incident_note` | Add an internal timeline note (public status page updates only in destructive mode) | yes |
 | `sutramx_list_status_pages` / `sutramx_get_status_page` | Status pages and the monitors on them | no |
-| `sutramx_create_status_page` / `sutramx_update_status_page` | Create a page (not public unless destructive mode), or change its `title`, `description`, `logo_url`, `accent_color`, `favicon_url`, `hide_powered_by`, `show_response_times`; `slug` and `is_public` only in destructive mode (any other setting is rejected) | yes |
+| `sutramx_create_status_page` / `sutramx_update_status_page` | Create a page (not public unless destructive mode), or change its `title`, `description`, `logo_url`, `accent_color`, `favicon_url`, `hide_powered_by`, `show_response_times`; `slug` and `is_public`, and any change to a page that is public, only in destructive mode (any other setting is rejected) | yes |
 | `sutramx_set_status_page_monitors` | Replace the monitors shown on a page (hidden unless destructive mode; an empty list needs `remove_all: true`) | yes, destructive |
 | `sutramx_delete_status_page` | Delete a page (hidden unless deletes are enabled) | yes, destructive |
 | `sutramx_uptime_report` | Uptime %, incidents, MTTR and health score per monitor over 7/14/30/90 days, plus SLO error budgets and burn rates | no |
@@ -45,7 +45,7 @@ Agents can be steered by text they read (prompt injection), so the user, not the
 Destructive mode covers everything that deletes data or changes what the public sees:
 
 - the delete tools and `sutramx_set_status_page_monitors` (it can take monitors off a page) are registered only in destructive mode;
-- `sutramx_update_status_page` refuses `slug` and `is_public` changes (publishing, unpublishing or moving a page), `sutramx_create_status_page` creates pages not public, and `sutramx_add_incident_note` refuses `public: true` (status page updates) outside destructive mode.
+- `sutramx_update_status_page` refuses `slug` and `is_public` changes (publishing, unpublishing or moving a page) and any change to a page that is public (title, logo, colours and the rest are visible to everyone), `sutramx_create_status_page` creates pages not public, and `sutramx_add_incident_note` refuses `public: true` (status page updates) outside destructive mode.
 
 Notes:
 
@@ -156,7 +156,7 @@ Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public UR
 | `HOST` / `PORT` | `127.0.0.1` / `3333` | HTTP listener |
 | `MCP_ALLOWED_HOSTS` | (none) | Allowed `Host` headers when not on loopback |
 | `SUTRAMX_READ_ONLY` | `false` | Register only read tools |
-| `SUTRAMX_ALLOW_DESTRUCTIVE` | `false` | Destructive mode: delete tools, status page monitor replacement, publishing and slug changes, public incident updates |
+| `SUTRAMX_ALLOW_DESTRUCTIVE` | `false` | Destructive mode: delete tools, status page monitor replacement, publishing and slug changes, edits to public status pages, public incident updates |
 | `SUTRAMX_HTTP_ALLOW_DESTRUCTIVE_HEADER` | `false` | HTTP: let clients opt into destructive mode with `X-SutramX-Allow-Destructive: true` |
 | `SUTRAMX_MAX_WRITES_PER_MINUTE` / `SUTRAMX_MAX_WRITES_PER_HOUR` / `SUTRAMX_MAX_PAUSES_PER_HOUR` | `20` / `200` / `10` | Per-session limits on changes (see Safety limits) |
 | `MCP_RESOURCE_URL` | `<SUTRAMX_API_URL>/mcp` | HTTP + OAuth: canonical URL of this `/mcp` endpoint (token audience) |

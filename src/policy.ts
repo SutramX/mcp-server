@@ -10,7 +10,8 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
  *                    removing monitors from status pages) are registered,
  *                    and public-impacting arguments (publishing a page,
  *                    changing its slug, public incident updates) are
- *                    accepted, only when this is true. Off by default.
+ *                    accepted, and public status pages can be edited,
+ *                    only when this is true. Off by default.
  *
  * stdio: SUTRAMX_READ_ONLY=true / SUTRAMX_ALLOW_DESTRUCTIVE=true.
  * HTTP:  the same env (server-wide). Per request, X-SutramX-Read-Only: true

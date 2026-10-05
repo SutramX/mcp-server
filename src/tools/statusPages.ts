@@ -118,19 +118,25 @@ export function registerStatusPageTools(server: McpServer, client: SutramXClient
 
 Settings the API accepts: ${STATUS_PAGE_SETTINGS.join(', ')}. Any other key is rejected before the API is called. hide_powered_by and favicon_url need the Pro plan (white-label); a 403 WHITE_LABEL_NOT_ENTITLED means the plan does not include it.
 Monitors on the page are changed with sutramx_set_status_page_monitors. Custom domains are managed in the dashboard (owner only).${policy.allowDestructive ? '' : `
-On this server ${PUBLIC_IMPACT_SETTINGS.join(' and ')} cannot be changed (publishing, unpublishing or moving a page needs destructive mode, which only the operator can enable).`}`,
+On this server ${PUBLIC_IMPACT_SETTINGS.join(' and ')} cannot be changed (publishing, unpublishing or moving a page needs destructive mode, which only the operator can enable), and a page that is public cannot be changed at all (everything on it is visible to the public). Pages that are not public can be edited; the user can change public pages in the dashboard.`}`,
         inputSchema: {
             status_page_id: StatusPageIdSchema,
             ...StatusPageSettingsShape,
             other_fields: z.record(z.string(), z.unknown()).optional().describe(`The same settings as an object, for clients that send them nested. Only these keys are accepted: ${STATUS_PAGE_SETTINGS.join(', ')}; named fields win.`),
         },
-        // Can unpublish or move a public page only in destructive mode.
+        // Can change a public page (or publish, unpublish or move one) only in destructive mode.
         annotations: { readOnlyHint: false, destructiveHint: policy.allowDestructive, idempotentHint: true, openWorldHint: true },
     }, safely(async ({ status_page_id, other_fields, ...fields }) => {
         const patch = statusPagePatch(fields, other_fields);
         const publicChanges = PUBLIC_IMPACT_SETTINGS.filter((name) => name in patch);
         if (publicChanges.length) requireDestructive(policy, `Changing ${publicChanges.join(' and ')} of a status page`);
         if (containsTruncated(patch)) throw new Error('A value ends in [TRUNCATED]: it was cut short in an earlier result. Send the full value.');
+        if (!policy.allowDestructive) {
+            // Every setting of a public page is visible to the public. Fail
+            // closed: only a page the API reports as not public is editable.
+            const current = await client.get<StatusPage>(`/status/pages/${status_page_id}`);
+            if (current.is_public !== false) requireDestructive(policy, 'Changing a public status page');
+        }
         const page = await client.patch<StatusPage>(`/status/pages/${status_page_id}`, patch);
         return ok(page as unknown as Record<string, unknown>, `Status page updated.\n${pageLine(page)}`);
     }));
