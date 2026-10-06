@@ -159,14 +159,14 @@ export function clearTokenCache(): void {
  * past the token's expiry); a revoked token therefore stops working here
  * within 30 s and at the API immediately.
  */
-export async function checkOAuthToken(token: string, apiUrl: string, config: OAuthResourceConfig, now = Date.now()): Promise<TokenCheck> {
+export async function checkOAuthToken(token: string, apiUrl: string, config: OAuthResourceConfig, now = Date.now(), relayHeaders: Record<string, string> = {}): Promise<TokenCheck> {
     const key = createHash('sha256').update(token).digest('hex');
     const cached = cache.get(key);
     if (cached && now - cached.at < CACHE_TTL_MS && (!cached.result.ok || cached.result.info.expiresAt * 1000 > now)) return cached.result;
 
     let response: Response;
     try {
-        const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': USER_AGENT, Authorization: `Bearer ${token}` };
+        const headers: Record<string, string> = { ...relayHeaders, Accept: 'application/json', 'User-Agent': USER_AGENT, Authorization: `Bearer ${token}` };
         if (config.resourceProofSecret) headers[RESOURCE_PROOF_HEADER] = config.resourceProofSecret;
         response = await fetch(`${apiUrl}/oauth/token-info`, { headers, redirect: 'error', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     } catch (error) {

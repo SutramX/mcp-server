@@ -4,7 +4,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import type { NextFunction, Request, Response } from 'express';
 import { createHash } from 'node:crypto';
-import { SutramXClient, validateApiUrl } from './client.js';
+import { SutramXClient, validateApiUrl, validateInternalApiUrl } from './client.js';
+import { clientIpHeaders, failedAuthLimitFromEnv, FailedAuthLimiter, normaliseIp, trustProxyHops } from './clientIp.js';
 import { MutationLimiter, mutationLimitsFromEnv, policyForRequest, policyFromEnv, ToolPolicy } from './policy.js';
 import { isAllowedOrigin } from './auth.js';
 import { bearerChallenge, bearerCredential, checkOAuthToken, MIN_RESOURCE_PROOF_LENGTH, oauthEnabled, oauthResourceConfig, oauthStartupProblem, protectedResourceMetadata, RESOURCE_PROOF_HEADER, resourceMetadataPaths, type Credential } from './oauth.js';
@@ -35,13 +36,24 @@ import { createSutramXServer } from './server.js';
  *                    (API keys only).
  *
  * The API base URL comes only from SUTRAMX_API_URL (operator env), never from
- * a request or a tool argument.
+ * a request or a tool argument. In HTTP mode SUTRAMX_API_INTERNAL_URL (e.g.
+ * http://api:3003 next to the API) carries the calls instead, while
+ * SUTRAMX_API_URL stays the public URL in OAuth metadata and defaults.
+ *
+ * Failed credentials are limited per client address, and the address is
+ * passed on to the API (see clientIp.ts).
  */
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 function apiUrl(): string {
     return validateApiUrl(process.env.SUTRAMX_API_URL || DEFAULT_API_URL);
+}
+
+/** HTTP mode: where API calls go (the internal URL when set). */
+function callApiUrl(): { url: string; internal: boolean; } {
+    const internal = process.env.SUTRAMX_API_INTERNAL_URL?.trim();
+    return internal ? { url: validateInternalApiUrl(internal), internal: true } : { url: apiUrl(), internal: false };
 }
 
 function describePolicy(policy: ToolPolicy): string {
@@ -128,7 +140,15 @@ async function runHttp(): Promise<void> {
     const challenge = (params: Record<string, string> = {}): string => useOAuth
         ? bearerChallenge(oauth, params)
         : `Bearer ${Object.entries({ realm: 'SutramX', ...params }).map(([key, value]) => `${key}="${value.replace(/["\\\r\n]/g, '')}"`).join(', ')}`;
+    const api = callApiUrl();
     const app = createMcpExpressApp({ host, ...(allowedHosts?.length ? { allowedHosts } : {}) });
+    // req.ip: the client address the trusted reverse proxy forwarded, or the TCP peer.
+    const hops = trustProxyHops();
+    if (hops > 0) app.set('trust proxy', hops);
+    else if (!loopback && process.env.NODE_ENV === 'production') {
+        console.error('Warning: TRUST_PROXY_HOPS is 0, so behind a reverse proxy every client shares the proxy\'s address for the failed-credential limit. Set TRUST_PROXY_HOPS=1 behind one proxy that sets X-Forwarded-For.');
+    }
+    const failedAuth = new FailedAuthLimiter(failedAuthLimitFromEnv());
 
     // RFC 9728 metadata: public, any origin (browser-based MCP clients read it).
     const metadata = protectedResourceMetadata(oauth);
@@ -156,15 +176,32 @@ async function runHttp(): Promise<void> {
     });
 
     app.post('/mcp', async (req: Request, res: Response) => {
+        // Failed credentials are limited per client address, before any token
+        // reaches the API: one client spraying junk tokens is cut off here and
+        // never spends the API's per-address budget.
+        const clientIp = normaliseIp(req.ip) || normaliseIp(req.socket.remoteAddress) || '0.0.0.0';
+        const retryAfter = failedAuth.retryAfter(clientIp);
+        if (retryAfter) {
+            res.setHeader('Retry-After', String(retryAfter));
+            return jsonRpcError(res, 429, `Too many failed sign-in attempts from this address; retry in ${retryAfter} seconds`);
+        }
+        let failureRecorded = false;
+        const authFailed = () => {
+            if (failureRecorded) return;
+            failureRecorded = true;
+            failedAuth.recordFailure(clientIp);
+        };
         // An Authorization header that is not a SutramX key or OAuth access
         // token is rejected, never replaced by the server's own key.
         const sent = req.headers.authorization;
         const credential: Credential | null = sent !== undefined ? bearerCredential(sent) : envKey ? { kind: 'api_key', token: envKey } : null;
         if (!credential) {
+            if (sent !== undefined) authFailed();
             res.setHeader('WWW-Authenticate', challenge(sent !== undefined ? { error: 'invalid_token', error_description: 'Unrecognised credential' } : {}));
             return jsonRpcError(res, 401, useOAuth ? 'Sign in to SutramX (OAuth), or send your SutramX API key as "Authorization: Bearer sk_..."' : 'Send your SutramX API key as "Authorization: Bearer sk_..."');
         }
         if (credential.kind === 'oauth' && !useOAuth) {
+            authFailed();
             res.setHeader('WWW-Authenticate', challenge({ error: 'invalid_token', error_description: 'OAuth is disabled on this server' }));
             return jsonRpcError(res, 401, 'OAuth is disabled on this server: send your SutramX API key as "Authorization: Bearer sk_..."');
         }
@@ -172,12 +209,14 @@ async function runHttp(): Promise<void> {
         // into destructive mode only if the operator allowed that by env.
         let policy: ToolPolicy = policyForRequest(serverPolicy, req.headers);
         const authHeaders: Record<string, string> = {};
+        const relayHeaders = clientIpHeaders(clientIp === '0.0.0.0' ? null : clientIp, oauth.resourceProofSecret);
         if (credential.kind === 'oauth') {
             // Audience + liveness check before any tool runs (MCP spec: the
             // server validates tokens were issued for it; invalid → 401).
-            const check = await checkOAuthToken(credential.token, apiUrl(), oauth);
+            const check = await checkOAuthToken(credential.token, api.url, oauth, Date.now(), relayHeaders);
             if (!check.ok) {
                 if (check.status === 401) {
+                    authFailed();
                     res.setHeader('WWW-Authenticate', bearerChallenge(oauth, { error: 'invalid_token', error_description: check.description }));
                 }
                 return jsonRpcError(res, check.status, check.description);
@@ -188,7 +227,8 @@ async function runHttp(): Promise<void> {
         }
         // Stateless: a fresh server + transport per request keeps users isolated;
         // mutations are rate-limited per credential.
-        const server = createSutramXServer(new SutramXClient(credential.token, apiUrl(), authHeaders), policy, limiterFor(credential.token));
+        const client = new SutramXClient(credential.token, api.url, authHeaders, { relayHeaders, internal: api.internal, onAuthFailure: authFailed });
+        const server = createSutramXServer(client, policy, limiterFor(credential.token));
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
         res.on('close', () => {
             void transport.close();
@@ -221,7 +261,7 @@ async function runHttp(): Promise<void> {
     });
 
     app.listen(port, host, () => {
-        console.error(`${SERVER_NAME} ${SERVER_VERSION} listening on http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp (API ${apiUrl()}, default ${describePolicy(serverPolicy)})`);
+        console.error(`${SERVER_NAME} ${SERVER_VERSION} listening on http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp (API ${api.url}, default ${describePolicy(serverPolicy)})`);
     });
 }
 

@@ -163,6 +163,9 @@ Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public UR
 | `MCP_AUTHORIZATION_SERVER` | `SUTRAMX_API_URL` | HTTP + OAuth: issuer named in the protected-resource metadata |
 | `OAUTH_RESOURCE_PROXY_SECRET` | (none) | HTTP + OAuth: resource proof sent to the API with OAuth tokens (at least 16 characters); required when `NODE_ENV=production` unless `MCP_OAUTH=off` |
 | `MCP_OAUTH` | `on` | HTTP: `off` accepts SutramX API keys only (no OAuth metadata, OAuth tokens refused) |
+| `SUTRAMX_API_INTERNAL_URL` | (none) | HTTP: send API calls here instead of `SUTRAMX_API_URL` (e.g. `http://api:3003` when running next to the API); `SUTRAMX_API_URL` stays the public URL in OAuth metadata. Plain `http://` only for loopback, private addresses and single-label container names |
+| `TRUST_PROXY_HOPS` | `0` | HTTP: number of reverse proxies in front of the server that set `X-Forwarded-For`; the client address is taken from it only when this is set (`1` behind one proxy) |
+| `MCP_FAILED_AUTH_PER_IP` | `50` | HTTP: failed credentials allowed per client address in 15 minutes before it gets `429` with `Retry-After` |
 | `MCP_ALLOWED_ORIGINS` | (none) | Extra browser origins allowed to call `/mcp` (comma-separated, e.g. `https://app.example.com`); requests without `Origin` are always allowed |
 
 ## Notes
@@ -176,6 +179,7 @@ Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public UR
 ## Security
 
 - `SUTRAMX_API_URL` must be `https://` (plain `http://` only for loopback); the server refuses to start otherwise, warns when `NODE_TLS_REJECT_UNAUTHORIZED=0`, and never follows redirects with a key.
+- In HTTP mode, failed credentials (a malformed `Authorization` header, an OAuth token or API key the API rejects) are limited per client address (`MCP_FAILED_AUTH_PER_IP`), checked before any token reaches the API. With `OAUTH_RESOURCE_PROXY_SECRET` set, API calls carry the client address in `X-SutramX-Client-Ip` with an HMAC of it under that secret, so the API applies its own per-address limits to each user rather than to the server's address.
 - Credentials stored in monitor config (headers such as `Authorization`/`Cookie`, keys named like `*token*`, `*secret*`, `*password*`, `*api_key*`, and passwords in URLs) are returned as `[REDACTED]`. Sending `[REDACTED]` back in `sutramx_update_monitor` keeps the stored value; it cannot stand for a value that is not stored.
 - Text that comes from monitored sites or other people (check errors, names, notes) is shown single-line inside `«»`, without control characters, and the server instructions tell the agent to treat it as data.
 - `structuredContent` (the JSON next to the text) is sanitized (control, zero-width and bidi-override characters removed), strings longer than 8,000 characters end in `[TRUNCATED]`, and the whole result is capped at 25,000 characters (`"truncated": true` when items were dropped). Values ending in `[TRUNCATED]` are refused when sent back. Several list tools declare an `outputSchema`.

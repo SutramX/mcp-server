@@ -36,6 +36,40 @@ export function validateApiUrl(raw: string): string {
     return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
 }
 
+function isPrivateHost(hostname: string): boolean {
+    const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (LOOPBACK.has(host)) return true;
+    // A single-label name (no dots) is a container/service name on a private network, e.g. `api`.
+    if (/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host) && !/^\d+$/.test(host)) return true;
+    const v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
+    if (v4) {
+        const [a, b] = [Number(v4[1]), Number(v4[2])];
+        return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+    }
+    return host.startsWith('fc') || host.startsWith('fd');
+}
+
+/**
+ * SUTRAMX_API_INTERNAL_URL: where a hosted server sends its API calls when it
+ * runs next to the API (e.g. `http://api:3003` on the compose network), so
+ * they skip the public edge. Plain http is allowed only for loopback, private
+ * addresses and single-label (container) host names; anything else must be
+ * https like SUTRAMX_API_URL.
+ */
+export function validateInternalApiUrl(raw: string): string {
+    let parsed: URL;
+    try {
+        parsed = new URL(raw);
+    } catch {
+        throw new Error('SUTRAMX_API_INTERNAL_URL is not a valid URL');
+    }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('SUTRAMX_API_INTERNAL_URL must not contain credentials, a query string or a fragment');
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isPrivateHost(parsed.hostname))) {
+        throw new Error(`Refusing to send API keys to ${parsed.origin}: SUTRAMX_API_INTERNAL_URL must use https:// (plain http only for loopback, private addresses and container names)`);
+    }
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+}
+
 type Query = Record<string, string | number | boolean | undefined | null>;
 
 export interface RequestOptions {
@@ -86,6 +120,15 @@ export function parseErrorBody(status: number, body: unknown): SutramXApiError {
     return new SutramXApiError(status, `HTTP ${status}`);
 }
 
+export interface ClientOptions {
+    /** Sent with every call, anonymous ones too (the end user's address, see clientIp.ts). */
+    relayHeaders?: Record<string, string>;
+    /** `baseUrl` is SUTRAMX_API_INTERNAL_URL: validated with validateInternalApiUrl. */
+    internal?: boolean;
+    /** Called when the API rejects the credential (HTTP 401). */
+    onAuthFailure?: () => void;
+}
+
 export class SutramXClient {
     readonly baseUrl: string;
 
@@ -94,8 +137,8 @@ export class SutramXClient {
      * token (sxo_at_…) issued for this MCP server. `authHeaders` are sent
      * with it (never on anonymous calls).
      */
-    constructor(private readonly apiKey: string, baseUrl: string = DEFAULT_API_URL, private readonly authHeaders: Record<string, string> = {}) {
-        this.baseUrl = validateApiUrl(baseUrl);
+    constructor(private readonly apiKey: string, baseUrl: string = DEFAULT_API_URL, private readonly authHeaders: Record<string, string> = {}, private readonly clientOptions: ClientOptions = {}) {
+        this.baseUrl = clientOptions.internal ? validateInternalApiUrl(baseUrl) : validateApiUrl(baseUrl);
     }
 
     async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
@@ -103,7 +146,7 @@ export class SutramXClient {
         for (const [key, value] of Object.entries(options.query || {})) {
             if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
         }
-        const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': USER_AGENT };
+        const headers: Record<string, string> = { ...this.clientOptions.relayHeaders, Accept: 'application/json', 'User-Agent': USER_AGENT };
         if (!options.anonymous) {
             Object.assign(headers, this.authHeaders);
             headers.Authorization = `Bearer ${this.apiKey}`;
@@ -124,6 +167,7 @@ export class SutramXClient {
             const reason = (error as Error).name === 'TimeoutError' ? `timed out after ${REQUEST_TIMEOUT_MS / 1000}s` : (error as Error).message;
             throw new SutramXApiError(0, `Could not reach the SutramX API at ${this.baseUrl}: ${reason}`);
         }
+        if (response.status === 401 && !options.anonymous) this.clientOptions.onAuthFailure?.();
         if (response.status === 204) return undefined as T;
         const maxBytes = options.maxBytes ?? MAX_RESPONSE_BYTES;
         const tooLarge = () => new SutramXApiError(response.status, 'Response too large; use filters or a smaller limit');
