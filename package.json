@@ -4,14 +4,19 @@
   "mcpName": "io.github.SutramX/mcp-server",
   "description": "Model Context Protocol server for SutramX uptime monitoring: lets AI agents and assistants manage monitors, incidents and status pages.",
   "license": "MIT",
-  "author": "SutramX",
-  "homepage": "https://github.com/sutramx/mcp-server#readme",
+  "author": {
+    "name": "SutramX",
+    "email": "support@sutramx.com",
+    "url": "https://sutramx.com"
+  },
+  "homepage": "https://github.com/SutramX/mcp-server#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sutramx/mcp-server.git"
+    "url": "git+https://github.com/SutramX/mcp-server.git"
   },
   "bugs": {
-    "url": "https://github.com/sutramx/mcp-server/issues"
+    "url": "https://github.com/SutramX/mcp-server/issues",
+    "email": "support@sutramx.com"
   },
   "keywords": [
     "mcp",
