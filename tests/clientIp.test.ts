@@ -7,7 +7,7 @@ import { after, before, test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { validateInternalApiUrl } from '../src/client.js';
-import { clientIpHeaders, failedAuthLimitFromEnv, FailedAuthLimiter, normaliseIp, trustProxyHops } from '../src/clientIp.js';
+import { clientIpHeaders, failedAuthLimitFromEnv, FailedAuthLimiter, isPrivateAddress, normaliseIp, trustProxyHops } from '../src/clientIp.js';
 
 /**
  * Failed credentials are limited per client address (not per server), and
@@ -50,6 +50,8 @@ test('helpers: trusted proxy hops, limit from env, address parsing, proof header
     assert.equal(failedAuthLimitFromEnv(env({ MCP_FAILED_AUTH_PER_IP: '5' })), 5);
     assert.equal(normaliseIp('::ffff:203.0.113.5'), '203.0.113.5');
     assert.equal(normaliseIp('not-an-ip'), null);
+    for (const ip of ['127.0.0.1', '10.1.2.3', '172.18.0.4', '192.168.1.1', '::1', 'fd00::1']) assert.equal(isPrivateAddress(ip), true, ip);
+    for (const ip of ['203.0.113.5', '172.32.0.1', '2001:db8::1']) assert.equal(isPrivateAddress(ip), false, ip);
     assert.deepEqual(clientIpHeaders('203.0.113.5', null), {}, 'never without the secret');
     assert.deepEqual(clientIpHeaders(null, SECRET), {});
     assert.deepEqual(clientIpHeaders('203.0.113.5', SECRET), {
@@ -169,6 +171,10 @@ test('the API gets the end user address with an HMAC proof, through the internal
     assert.equal(call?.ip, '198.51.100.8');
     assert.equal(call?.ipProof, createHmac('sha256', SECRET).update('client-ip:198.51.100.8').digest('hex'));
     assert.equal(call?.proof, undefined, 'the resource proof itself still never goes out with API keys');
+});
+
+test('a peer on the private network (a proxy without TRUST_PROXY_HOPS) is never locked out', async () => {
+    for (let i = 0; i < 5; i++) assert.equal((await post('10.0.0.9', 'Bearer sxo_at_junk')).status, 401);
 });
 
 test('malformed credentials and API keys the API rejects count too; no credential at all does not', async () => {

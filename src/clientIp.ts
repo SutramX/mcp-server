@@ -18,7 +18,8 @@ import { isIP } from 'node:net';
  *  - Failed credentials (a malformed Authorization header, an OAuth token
  *    the API rejects, an API key the API rejects) are counted per address;
  *    past MCP_FAILED_AUTH_PER_IP (default 50) in 15 minutes the address gets
- *    429 + Retry-After before any token check reaches the API.
+ *    429 + Retry-After before any token check reaches the API. Loopback and
+ *    private addresses are not limited (see isPrivateAddress).
  *  - With OAUTH_RESOURCE_PROXY_SECRET set, every API call carries the
  *    address in X-SutramX-Client-Ip with X-SutramX-Client-Ip-Proof, an HMAC
  *    of it under that secret, so the API keys its own per-address limits on
@@ -48,6 +49,20 @@ export function normaliseIp(raw: string | undefined | null): string | null {
     let ip = raw.trim();
     if (ip.toLowerCase().startsWith('::ffff:') && isIP(ip.slice(7)) === 4) ip = ip.slice(7);
     return isIP(ip) ? ip : null;
+}
+
+/**
+ * Loopback and private addresses are never limited: such a peer is a reverse
+ * proxy that TRUST_PROXY_HOPS was not set for (every user would share it, the
+ * lockout this module exists to prevent) or a local health check.
+ */
+export function isPrivateAddress(ip: string): boolean {
+    if (isIP(ip) === 4) {
+        const [a, b] = ip.split('.').map(Number);
+        return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a === 0;
+    }
+    const lower = ip.toLowerCase();
+    return lower === '::1' || lower === '::' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80:');
 }
 
 /** IPv6 addresses are limited per /64: one host usually owns the whole block. */

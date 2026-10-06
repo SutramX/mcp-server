@@ -5,7 +5,7 @@ import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js
 import type { NextFunction, Request, Response } from 'express';
 import { createHash } from 'node:crypto';
 import { SutramXClient, validateApiUrl, validateInternalApiUrl } from './client.js';
-import { clientIpHeaders, failedAuthLimitFromEnv, FailedAuthLimiter, normaliseIp, trustProxyHops } from './clientIp.js';
+import { clientIpHeaders, failedAuthLimitFromEnv, FailedAuthLimiter, isPrivateAddress, normaliseIp, trustProxyHops } from './clientIp.js';
 import { MutationLimiter, mutationLimitsFromEnv, policyForRequest, policyFromEnv, ToolPolicy } from './policy.js';
 import { isAllowedOrigin } from './auth.js';
 import { bearerChallenge, bearerCredential, checkOAuthToken, MIN_RESOURCE_PROOF_LENGTH, oauthEnabled, oauthResourceConfig, oauthStartupProblem, protectedResourceMetadata, RESOURCE_PROOF_HEADER, resourceMetadataPaths, type Credential } from './oauth.js';
@@ -180,14 +180,15 @@ async function runHttp(): Promise<void> {
         // reaches the API: one client spraying junk tokens is cut off here and
         // never spends the API's per-address budget.
         const clientIp = normaliseIp(req.ip) || normaliseIp(req.socket.remoteAddress) || '0.0.0.0';
-        const retryAfter = failedAuth.retryAfter(clientIp);
+        const limited = !isPrivateAddress(clientIp);
+        const retryAfter = limited ? failedAuth.retryAfter(clientIp) : 0;
         if (retryAfter) {
             res.setHeader('Retry-After', String(retryAfter));
             return jsonRpcError(res, 429, `Too many failed sign-in attempts from this address; retry in ${retryAfter} seconds`);
         }
         let failureRecorded = false;
         const authFailed = () => {
-            if (failureRecorded) return;
+            if (failureRecorded || !limited) return;
             failureRecorded = true;
             failedAuth.recordFailure(clientIp);
         };
