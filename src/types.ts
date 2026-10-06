@@ -47,6 +47,8 @@ export interface RunCheckResult {
     error_type: string | null;
     region: string;
     checked_at: string;
+    /** Type-specific check details (e.g. kind 'mcp'). */
+    details?: unknown;
 }
 
 export interface CheckRow {

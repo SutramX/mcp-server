@@ -6,7 +6,7 @@ import type { CheckPage, Monitor, MonitorSummary, RunCheckResult } from '../type
 
 const STATUSES = ['up', 'down', 'degraded', 'paused', 'pending', 'maintenance'] as const;
 /** Monitor types POST /monitors accepts. */
-export const MONITOR_TYPES = ['http', 'api', 'ping', 'port', 'udp', 'dns', 'multistep', 'cron'] as const;
+export const MONITOR_TYPES = ['http', 'api', 'ping', 'port', 'udp', 'dns', 'multistep', 'mcp', 'cron'] as const;
 
 /** GET /monitors has no paging (only ?tag=); scan at most this many and this many bytes. */
 export const MAX_MONITORS_SCANNED = 5_000;
@@ -24,9 +24,9 @@ export const IsoTimeSchema = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}([T ][0
 
 const MonitorFieldsShape = {
     name: z.string().min(1).max(255).describe('Display name, e.g. "Checkout API"'),
-    url: z.string().max(2048).optional().describe('Target URL, required for http/api monitors (https://...). Other types take their target from config: ping/port/udp config.host, dns config.hostname, multistep the URL of each step.'),
+    url: z.string().max(2048).optional().describe('Target URL, required for http/api monitors (https://...) and mcp monitors (the https:// Streamable HTTP endpoint of a remote MCP server). Other types take their target from config: ping/port/udp config.host, dns config.hostname, multistep the URL of each step.'),
     interval_seconds: z.number().int().min(15).max(900).optional().describe('Seconds between checks (15-900). Plans have a minimum; omit for the plan default.'),
-    config: z.record(z.string(), z.unknown()).optional().describe('Type-specific settings, e.g. {"timeout": 10000, "expected_status_codes": [200], "keyword": "ok", "headers": {...}}; ping monitors need {"host": "example.com"}; port/udp monitors {"host": "db.example.com", "port": 5432}; dns monitors {"hostname": "example.com", "record_type": "A"} (record_type A, AAAA, CNAME, MX, TXT or NS; alerts on any change, or set "dns_mode": "expected" with "expected_values": [...]); multistep monitors {"steps": [{"name": "Login", "method": "POST", "url": "https://api.example.com/login", "expected_status_codes": [200]}, ...]} (write-only secrets go in "secrets": {"NAME": "value"} and are used as {{secrets.NAME}}); cron monitors {"cron_expression": "*/5 * * * *"}.'),
+    config: z.record(z.string(), z.unknown()).optional().describe('Type-specific settings, e.g. {"timeout": 10000, "expected_status_codes": [200], "keyword": "ok", "headers": {...}}; ping monitors need {"host": "example.com"}; port/udp monitors {"host": "db.example.com", "port": 5432}; dns monitors {"hostname": "example.com", "record_type": "A"} (record_type A, AAAA, CNAME, MX, TXT or NS; alerts on any change, or set "dns_mode": "expected" with "expected_values": [...]); multistep monitors {"steps": [{"name": "Login", "method": "POST", "url": "https://api.example.com/login", "expected_status_codes": [200]}, ...]} (write-only secrets go in "secrets": {"NAME": "value"} and are used as {{secrets.NAME}}); mcp monitors (all optional) {"headers": {"Authorization": "Bearer ..."}, "expected_tools": ["search_docs"], "drift_mode": "alert_on_change" (default) or "off", "drift_scope": "schemas" (default) or "names", "drift_severity": "degraded" (default) or "down", "protocol_version": "2025-11-25" (default), "2025-06-18", "2025-03-26" or "2024-11-05", "strict_protocol_version": false, "timeout": 15000 (ms, 1000-60000), "verify_tls": true}; cron monitors {"cron_expression": "*/5 * * * *"}.'),
     tags: z.array(z.string().min(1).max(32).regex(/^[^\u0000-\u001f]+$/)).max(20).optional().describe('Labels, lower-cased (e.g. ["prod", "api"])'),
     regions: z.array(RegionCodeSchema).min(1).max(50).optional().describe('Probe location codes to check from (e.g. ["fra1", "usa-az-probe"]). See sutramx_list_regions. Omit for the plan default.'),
 };
@@ -36,6 +36,34 @@ export function monitorLine(monitor: Monitor): string {
     const target = monitor.url ? ` ${untrusted(monitor.url, 200)}` : '';
     const key = monitor.external_id ? ` key=${untrusted(monitor.external_id, 128)}` : '';
     return `- **${untrusted(monitor.name, 120)}** (${monitor.id}) [${monitor.type}] ${status.toUpperCase()}${target} · every ${monitor.interval_seconds}s · 24h ${pct(monitor.uptime_24h)}${key}`;
+}
+
+/** Names from a list returned by a remote server: fenced, bounded, at most `max` shown. */
+function untrustedList(values: unknown, max = 20): string {
+    const list = Array.isArray(values) ? values : [];
+    const shown = list.slice(0, max).map((value) => untrusted(value, 128)).join(', ');
+    return list.length > max ? `${shown} (+${list.length - max} more)` : shown || 'none';
+}
+
+/** run-check details of an mcp monitor; everything the MCP server reported is fenced. */
+export function mcpDetailsMarkdown(details: unknown): string {
+    if (!details || typeof details !== 'object' || (details as { kind?: unknown; }).kind !== 'mcp') return '';
+    const d = details as Record<string, any>;
+    const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : 'n/a');
+    const server = d.server_name != null ? `${untrusted(d.server_name, 120)}${d.server_version != null ? ` ${untrusted(d.server_version, 64)}` : ''}${d.server_title != null ? ` (${untrusted(d.server_title, 120)})` : ''}` : 'unknown';
+    const lines = [
+        `- MCP server: ${server}`,
+        `- protocol: ${d.protocol_version != null ? untrusted(d.protocol_version, 32) : 'not negotiated'} (offered ${untrusted(d.offered_version, 32)})${d.session ? ' · session' : ''}`,
+        `- tools: ${d.tool_count == null ? 'tools/list not reached' : num(d.tool_count)}${Array.isArray(d.capabilities) && d.capabilities.length ? ` · capabilities: ${untrustedList(d.capabilities)}` : ''}`,
+    ];
+    const timings = d.timings && typeof d.timings === 'object' ? d.timings as Record<string, unknown> : null;
+    if (timings) lines.push(`- timings: initialize ${num(timings.initialize_ms)} ms · initialized ${num(timings.initialized_ms)} ms · tools/list ${num(timings.tools_list_ms)} ms (${num(timings.tools_pages)} pages)`);
+    if (Array.isArray(d.missing_tools) && d.missing_tools.length) lines.push(`- missing expected tools: ${untrustedList(d.missing_tools)}`);
+    if (d.drift && typeof d.drift === 'object') {
+        const drift = d.drift as Record<string, unknown>;
+        lines.push(`- drift from baseline: added ${untrustedList(drift.added)} · removed ${untrustedList(drift.removed)} · changed ${untrustedList(drift.changed)}`);
+    }
+    return lines.join('\n');
 }
 
 function monitorMarkdown(monitor: Monitor): string {
@@ -155,8 +183,9 @@ Use sutramx_get_monitor for one monitor's full details and sutramx_get_check_res
 
 Pass "key" to make the call idempotent: a monitor with that key is created once and updated on later calls (same as sutramx.yml / Terraform). Without a key every call creates a new monitor.
 Plan limits (monitor count, minimum interval, locations) are enforced; a 403 ENTITLEMENT_LIMIT_REACHED means the plan is full. dns and multistep monitors need a plan that includes them (403 FEATURE_NOT_AVAILABLE otherwise).
+mcp monitors check a remote MCP server read-only (initialize + tools/list; tools are never called) and alert when it is unreachable, speaks an unsupported protocol version, lacks an expected tool or its tool list drifts from the accepted baseline (error types mcp_protocol_error, mcp_version_mismatch, mcp_missing_tools, mcp_tools_changed). A 401 means the server needs an Authorization header.
 
-Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly backup","type":"cron","config":{"cron_expression":"0 2 * * *"}}; {"name":"Postgres","type":"port","config":{"host":"db.example.com","port":5432}}; {"name":"MX records","type":"dns","config":{"hostname":"example.com","record_type":"MX"}}`,
+Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly backup","type":"cron","config":{"cron_expression":"0 2 * * *"}}; {"name":"Postgres","type":"port","config":{"host":"db.example.com","port":5432}}; {"name":"MX records","type":"dns","config":{"hostname":"example.com","record_type":"MX"}}; {"name":"Docs MCP","type":"mcp","url":"https://mcp.example.com/mcp","config":{"headers":{"Authorization":"Bearer ..."},"expected_tools":["search_docs"]}}`,
         inputSchema: {
             type: z.string().min(2).max(32).default('http').describe(`Monitor type: ${MONITOR_TYPES.join(', ')} (default http)`),
             ...MonitorFieldsShape,
@@ -245,12 +274,13 @@ Examples: {"name":"Homepage","url":"https://example.com"}; {"name":"Nightly back
 
     server.registerTool('sutramx_run_check', {
         title: 'Run a check now',
-        description: 'Run one real check of a monitor right now from one region and record it like a scheduled check. Returns status, HTTP status code, response time and error. Refused (409) for paused monitors. Rate limited to 30 per 5 minutes.',
+        description: 'Run one real check of a monitor right now from one region and record it like a scheduled check. Returns status, HTTP status code, response time, error and type-specific details (for mcp monitors: server name/version, negotiated protocol version, tool count, missing tools and tool-list drift). Refused (409) for paused monitors. Rate limited to 30 per 5 minutes.',
         inputSchema: { monitor_id: MonitorIdSchema },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     }, safely(async ({ monitor_id }) => {
         const result = await client.post<RunCheckResult>(`/monitors/${monitor_id}/run-check`);
-        const markdown = `Check from ${result.region}: **${result.status.toUpperCase()}** in ${result.response_time_ms} ms${result.status_code ? ` (HTTP ${result.status_code})` : ''}${result.error_message ? `\nError: ${untrusted(result.error_message)}` : ''}`;
+        const mcp = mcpDetailsMarkdown(result.details);
+        const markdown = `Check from ${result.region}: **${result.status.toUpperCase()}** in ${result.response_time_ms} ms${result.status_code ? ` (HTTP ${result.status_code})` : ''}${result.error_message ? `\nError: ${untrusted(result.error_message)}` : ''}${mcp ? `\n${mcp}` : ''}`;
         return ok(result as unknown as Record<string, unknown>, markdown);
     }));
 

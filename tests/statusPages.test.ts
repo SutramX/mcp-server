@@ -125,7 +125,7 @@ test('update_status_page description lists the accepted settings and no longer p
 });
 
 test('create_monitor documents every monitor type the API accepts, including dns and multistep', async () => {
-    assert.deepEqual([...MONITOR_TYPES].sort(), ['api', 'cron', 'dns', 'http', 'multistep', 'ping', 'port', 'udp']);
+    assert.deepEqual([...MONITOR_TYPES].sort(), ['api', 'cron', 'dns', 'http', 'mcp', 'multistep', 'ping', 'port', 'udp']);
     const client = await connect();
     const { tools } = await client.listTools();
     const tool = tools.find((item) => item.name === 'sutramx_create_monitor')!;
@@ -134,6 +134,7 @@ test('create_monitor documents every monitor type the API accepts, including dns
     const configDescription = (tool.inputSchema.properties as Record<string, any>).config.description as string;
     assert.match(configDescription, /dns monitors \{"hostname"/);
     assert.match(configDescription, /multistep monitors \{"steps"/);
+    assert.match(configDescription, /mcp monitors \(all optional\) \{"headers"/);
 
     const result: any = await client.callTool({ name: 'sutramx_create_monitor', arguments: { name: 'MX', type: 'dns', config: { hostname: 'example.com', record_type: 'MX' } } });
     assert.equal(result.isError, undefined, text(result));

@@ -12,7 +12,7 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_monitor_summary` | Counts by status, open incidents, 24h uptime | no |
 | `sutramx_list_monitors` | Monitors with live status and uptime; filter by status, tag, text | no |
 | `sutramx_get_monitor` | One monitor by id or monitoring-as-code key | no |
-| `sutramx_create_monitor` | Create a monitor of any type: `http`, `api`, `ping`, `port`, `udp`, `dns`, `multistep` or `cron` (pass `key` for an idempotent create-or-update) | yes |
+| `sutramx_create_monitor` | Create a monitor of any type: `http`, `api`, `ping`, `port`, `udp`, `dns`, `multistep`, `mcp` (a remote MCP server: initialize + tools/list, expected tools, tool-list drift) or `cron` (pass `key` for an idempotent create-or-update) | yes |
 | `sutramx_update_monitor` | Change name, URL, interval, config, tags, regions | yes |
 | `sutramx_pause_monitor` / `sutramx_resume_monitor` | Stop or restart checks (pauses are capped per hour, see Safety limits) | yes |
 | `sutramx_delete_monitor` | Delete a monitor and its history (hidden unless deletes are enabled) | yes, destructive |
