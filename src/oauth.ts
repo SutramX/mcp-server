@@ -18,8 +18,12 @@ import { REQUEST_TIMEOUT_MS, USER_AGENT } from './constants.js';
  * Env (HTTP mode):
  *  MCP_RESOURCE_URL          canonical URL of this MCP endpoint (default <SUTRAMX_API_URL>/mcp)
  *  MCP_AUTHORIZATION_SERVER  issuer of the authorization server (default SUTRAMX_API_URL)
- *  OAUTH_RESOURCE_PROXY_SECRET  optional; sent to the API with OAuth tokens
- *                            (X-SutramX-Resource-Proof) when the API requires it
+ *  OAUTH_RESOURCE_PROXY_SECRET  sent to the API with OAuth tokens
+ *                            (X-SutramX-Resource-Proof). At least 16 characters;
+ *                            required when NODE_ENV=production unless
+ *                            MCP_OAUTH=off (see oauthStartupProblem)
+ *  MCP_OAUTH                 "off" disables OAuth in HTTP mode: no metadata,
+ *                            OAuth access tokens are refused, API keys only
  */
 
 export const OAUTH_ACCESS_TOKEN_PREFIX = 'sxo_at_';
@@ -52,11 +56,34 @@ export function canonicalResource(raw: string): string {
     return stripSlash(`${parsed.origin}${parsed.pathname}`);
 }
 
+export const MIN_RESOURCE_PROOF_LENGTH = 16;
+
+/** OAuth is on in HTTP mode unless the operator sets MCP_OAUTH=off. */
+export function oauthEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+    return !['off', 'false', '0', 'no'].includes((env.MCP_OAUTH || '').trim().toLowerCase());
+}
+
+/**
+ * Startup check for HTTP mode. Without a usable resource proof the server
+ * would forward OAuth tokens to the API without X-SutramX-Resource-Proof, so
+ * in production a missing or short OAUTH_RESOURCE_PROXY_SECRET is a
+ * configuration error, never a silent downgrade. Returns the error message,
+ * or null when the server may start.
+ */
+export function oauthStartupProblem(env: NodeJS.ProcessEnv = process.env): string | null {
+    if (!oauthEnabled(env)) return null;
+    const proof = (env.OAUTH_RESOURCE_PROXY_SECRET || '').trim();
+    if (proof.length >= MIN_RESOURCE_PROOF_LENGTH) return null;
+    if ((env.NODE_ENV || '').trim() !== 'production') return null;
+    const why = proof ? `is shorter than ${MIN_RESOURCE_PROOF_LENGTH} characters` : 'is not set';
+    return `OAUTH_RESOURCE_PROXY_SECRET ${why}. With NODE_ENV=production the HTTP server needs it (at least ${MIN_RESOURCE_PROOF_LENGTH} characters, the value the SutramX API expects in ${RESOURCE_PROOF_HEADER}) to accept OAuth tokens. Set it, or set MCP_OAUTH=off to accept API keys only.`;
+}
+
 export function oauthResourceConfig(apiUrl: string, env: NodeJS.ProcessEnv = process.env): OAuthResourceConfig {
     const resource = canonicalResource((env.MCP_RESOURCE_URL || `${apiUrl}/mcp`).trim());
     const authorizationServer = stripSlash((env.MCP_AUTHORIZATION_SERVER || apiUrl).trim());
     const proof = (env.OAUTH_RESOURCE_PROXY_SECRET || '').trim();
-    return { resource, authorizationServer, resourceProofSecret: proof.length >= 16 ? proof : null };
+    return { resource, authorizationServer, resourceProofSecret: proof.length >= MIN_RESOURCE_PROOF_LENGTH ? proof : null };
 }
 
 /** RFC 9728 §3: the metadata URL for a resource with a path inserts the path after the well-known suffix. */

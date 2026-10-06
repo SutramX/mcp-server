@@ -144,7 +144,7 @@ The hosted server at `https://api.sutramx.com/mcp` also accepts OAuth 2.1, so cl
 
 On the consent page you pick the workspace and the permissions: `monitors:read`, `incidents:read`, `status_pages:read` (on by default) and `monitors:write`, `incidents:write`, `status_pages:write` (off unless you tick them; workspace viewers can only grant read). A token without a write scope gets only the read tools. Destructive tools (deletes, publishing, slug changes, replacing a status page's monitors) stay off on the hosted server; only the server operator can enable them (`SUTRAMX_ALLOW_DESTRUCTIVE`). OAuth tokens can never manage API keys, team members, billing, SSO or account settings. Access tokens last one hour and are refreshed automatically; revoke an app any time in SutramX → Settings → Authorized apps.
 
-Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public URL of your `/mcp` endpoint and `MCP_AUTHORIZATION_SERVER` to your SutramX API, and serve `/.well-known/oauth-protected-resource*` from this server.
+Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public URL of your `/mcp` endpoint and `MCP_AUTHORIZATION_SERVER` to your SutramX API, and serve `/.well-known/oauth-protected-resource*` from this server. Set `OAUTH_RESOURCE_PROXY_SECRET` (at least 16 characters, the value your API expects) so OAuth tokens reach the API with their resource proof. With `NODE_ENV=production` (the Docker image's default) the HTTP server refuses to start when that secret is missing or shorter than 16 characters, instead of silently sending tokens without it. A server that should accept API keys only sets `MCP_OAUTH=off`: no protected-resource metadata is served and OAuth access tokens are refused. stdio mode is not affected.
 
 ## Configuration
 
@@ -161,7 +161,8 @@ Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public UR
 | `SUTRAMX_MAX_WRITES_PER_MINUTE` / `SUTRAMX_MAX_WRITES_PER_HOUR` / `SUTRAMX_MAX_PAUSES_PER_HOUR` | `20` / `200` / `10` | Per-session limits on changes (see Safety limits) |
 | `MCP_RESOURCE_URL` | `<SUTRAMX_API_URL>/mcp` | HTTP + OAuth: canonical URL of this `/mcp` endpoint (token audience) |
 | `MCP_AUTHORIZATION_SERVER` | `SUTRAMX_API_URL` | HTTP + OAuth: issuer named in the protected-resource metadata |
-| `OAUTH_RESOURCE_PROXY_SECRET` | (none) | HTTP + OAuth: sent to the API with OAuth tokens when the API requires it |
+| `OAUTH_RESOURCE_PROXY_SECRET` | (none) | HTTP + OAuth: resource proof sent to the API with OAuth tokens (at least 16 characters); required when `NODE_ENV=production` unless `MCP_OAUTH=off` |
+| `MCP_OAUTH` | `on` | HTTP: `off` accepts SutramX API keys only (no OAuth metadata, OAuth tokens refused) |
 | `MCP_ALLOWED_ORIGINS` | (none) | Extra browser origins allowed to call `/mcp` (comma-separated, e.g. `https://app.example.com`); requests without `Origin` are always allowed |
 
 ## Notes

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { SutramXClient, validateApiUrl } from './client.js';
 import { MutationLimiter, mutationLimitsFromEnv, policyForRequest, policyFromEnv, ToolPolicy } from './policy.js';
 import { isAllowedOrigin } from './auth.js';
-import { bearerChallenge, bearerCredential, checkOAuthToken, oauthResourceConfig, protectedResourceMetadata, RESOURCE_PROOF_HEADER, resourceMetadataPaths, type Credential } from './oauth.js';
+import { bearerChallenge, bearerCredential, checkOAuthToken, MIN_RESOURCE_PROOF_LENGTH, oauthEnabled, oauthResourceConfig, oauthStartupProblem, protectedResourceMetadata, RESOURCE_PROOF_HEADER, resourceMetadataPaths, type Credential } from './oauth.js';
 import { DEFAULT_API_URL, SERVER_NAME, SERVER_VERSION } from './constants.js';
 import { createSutramXServer } from './server.js';
 
@@ -30,6 +30,9 @@ import { createSutramXServer } from './server.js';
  *                    the SutramX API as authorization server; the resulting
  *                    access token (sxo_at_...) is checked with the API and
  *                    limited to the scopes the user granted (see oauth.ts).
+ *                    With NODE_ENV=production the server refuses to start
+ *                    without OAUTH_RESOURCE_PROXY_SECRET unless MCP_OAUTH=off
+ *                    (API keys only).
  *
  * The API base URL comes only from SUTRAMX_API_URL (operator env), never from
  * a request or a tool argument.
@@ -112,12 +115,24 @@ async function runHttp(): Promise<void> {
         console.error('SUTRAMX_API_KEY is ignored when HOST is not loopback: every request must send its own Authorization: Bearer sk_... header.');
     }
 
+    const oauthProblem = oauthStartupProblem();
+    if (oauthProblem) {
+        console.error(oauthProblem);
+        process.exit(1);
+    }
+    const useOAuth = oauthEnabled();
     const oauth = oauthResourceConfig(apiUrl());
+    if (useOAuth && !oauth.resourceProofSecret) {
+        console.error(`Warning: OAUTH_RESOURCE_PROXY_SECRET is ${process.env.OAUTH_RESOURCE_PROXY_SECRET?.trim() ? `shorter than ${MIN_RESOURCE_PROOF_LENGTH} characters and ignored` : 'not set'}; OAuth tokens are sent to the API without ${RESOURCE_PROOF_HEADER} (refused when NODE_ENV=production).`);
+    }
+    const challenge = (params: Record<string, string> = {}): string => useOAuth
+        ? bearerChallenge(oauth, params)
+        : `Bearer ${Object.entries({ realm: 'SutramX', ...params }).map(([key, value]) => `${key}="${value.replace(/["\\\r\n]/g, '')}"`).join(', ')}`;
     const app = createMcpExpressApp({ host, ...(allowedHosts?.length ? { allowedHosts } : {}) });
 
     // RFC 9728 metadata: public, any origin (browser-based MCP clients read it).
     const metadata = protectedResourceMetadata(oauth);
-    for (const path of resourceMetadataPaths(oauth.resource)) {
+    for (const path of useOAuth ? resourceMetadataPaths(oauth.resource) : []) {
         app.options(path, (_req: Request, res: Response) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -146,8 +161,12 @@ async function runHttp(): Promise<void> {
         const sent = req.headers.authorization;
         const credential: Credential | null = sent !== undefined ? bearerCredential(sent) : envKey ? { kind: 'api_key', token: envKey } : null;
         if (!credential) {
-            res.setHeader('WWW-Authenticate', bearerChallenge(oauth, sent !== undefined ? { error: 'invalid_token', error_description: 'Unrecognised credential' } : {}));
-            return jsonRpcError(res, 401, 'Sign in to SutramX (OAuth), or send your SutramX API key as "Authorization: Bearer sk_..."');
+            res.setHeader('WWW-Authenticate', challenge(sent !== undefined ? { error: 'invalid_token', error_description: 'Unrecognised credential' } : {}));
+            return jsonRpcError(res, 401, useOAuth ? 'Sign in to SutramX (OAuth), or send your SutramX API key as "Authorization: Bearer sk_..."' : 'Send your SutramX API key as "Authorization: Bearer sk_..."');
+        }
+        if (credential.kind === 'oauth' && !useOAuth) {
+            res.setHeader('WWW-Authenticate', challenge({ error: 'invalid_token', error_description: 'OAuth is disabled on this server' }));
+            return jsonRpcError(res, 401, 'OAuth is disabled on this server: send your SutramX API key as "Authorization: Bearer sk_..."');
         }
         // Per request, the client config may narrow to read-only; it may opt
         // into destructive mode only if the operator allowed that by env.
