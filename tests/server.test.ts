@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { bearerKey, isAllowedOrigin } from '../src/auth.js';
+import { bearerKey, isAllowedOrigin, mayUseEnvKey } from '../src/auth.js';
 import { describeApiError, parseErrorBody, SutramXClient } from '../src/client.js';
 import { createSutramXServer } from '../src/server.js';
 import type { ToolPolicy } from '../src/policy.js';
@@ -135,15 +135,26 @@ test('bearerKey accepts only SutramX keys', () => {
     assert.equal(bearerKey(undefined), null);
 });
 
-test('isAllowedOrigin: no Origin and loopback origins pass, other sites need MCP_ALLOWED_ORIGINS', () => {
+test('isAllowedOrigin: no Origin passes; every browser origin (loopback included) needs MCP_ALLOWED_ORIGINS', () => {
     assert.equal(isAllowedOrigin(undefined), true);
-    assert.equal(isAllowedOrigin('http://localhost:6274'), true);
-    assert.equal(isAllowedOrigin('http://127.0.0.1:3000'), true);
-    assert.equal(isAllowedOrigin('http://[::1]:3000'), true);
+    assert.equal(isAllowedOrigin('http://localhost:6274'), false);
+    assert.equal(isAllowedOrigin('http://127.0.0.1:3000'), false);
+    assert.equal(isAllowedOrigin('http://[::1]:3000'), false);
     assert.equal(isAllowedOrigin('https://evil.example.com'), false);
     assert.equal(isAllowedOrigin('null'), false);
+    assert.equal(isAllowedOrigin('null', ['null']), false);
     assert.equal(isAllowedOrigin('http://localhost.evil.example.com'), false);
+    assert.equal(isAllowedOrigin('http://localhost:6274', ['http://localhost:6274']), true);
+    assert.equal(isAllowedOrigin('http://localhost:6275', ['http://localhost:6274']), false);
     assert.equal(isAllowedOrigin('https://app.example.com', ['https://app.example.com/']), true);
+    assert.equal(isAllowedOrigin('https://any.example.com', ['*']), true);
+});
+
+test('mayUseEnvKey: the server key is lent only to no-Origin requests and explicitly listed origins', () => {
+    assert.equal(mayUseEnvKey(undefined), true);
+    assert.equal(mayUseEnvKey('http://localhost:5173'), false);
+    assert.equal(mayUseEnvKey('http://localhost:6274', ['http://localhost:6274']), true);
+    assert.equal(mayUseEnvKey('https://any.example.com', ['*']), false);
 });
 
 test('get_incident unwraps the {incident, ...} response', async () => {

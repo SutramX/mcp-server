@@ -136,7 +136,7 @@ claude mcp add --transport http sutramx http://127.0.0.1:3333/mcp \
   --header "Authorization: Bearer sk_your_key"
 ```
 
-When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_API_KEY` is used for requests that send no `Authorization` header (a header that is not a SutramX key is rejected with 401). Browser requests are only accepted from a loopback `Origin` or one listed in `MCP_ALLOWED_ORIGINS`. With any other `HOST` the environment key is ignored, and you should put the server behind HTTPS. Set `MCP_ALLOWED_HOSTS` (comma-separated host names) to keep DNS-rebinding protection when binding to `0.0.0.0`. `GET /health` returns the server version.
+When the server listens on loopback (the default, `HOST=127.0.0.1`), `SUTRAMX_API_KEY` is used for requests that send no `Authorization` header (a header that is not a SutramX key is rejected with 401). Browser requests (any request with an `Origin` header, `localhost` pages included) are refused unless that origin is listed in `MCP_ALLOWED_ORIGINS`, so a local dev server or other localhost web app cannot use your key. To use a browser-based client such as the MCP Inspector, list its origin, e.g. `MCP_ALLOWED_ORIGINS=http://localhost:6274`. The environment key is only lent to requests without an `Origin` or from an origin listed by name (a `*` entry admits browsers that send their own key, never the environment key). With any other `HOST` the environment key is ignored, and you should put the server behind HTTPS. Set `MCP_ALLOWED_HOSTS` (comma-separated host names) to keep DNS-rebinding protection when binding to `0.0.0.0`. `GET /health` returns the server version.
 
 ### Hosted server with OAuth (Claude.ai and other remote clients)
 
@@ -166,7 +166,7 @@ Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public UR
 | `SUTRAMX_API_INTERNAL_URL` | (none) | HTTP: send API calls here instead of `SUTRAMX_API_URL` (e.g. `http://api:3003` when running next to the API); `SUTRAMX_API_URL` stays the public URL in OAuth metadata. Plain `http://` only for loopback, private addresses and single-label container names |
 | `TRUST_PROXY_HOPS` | `0` | HTTP: number of reverse proxies in front of the server that set `X-Forwarded-For`; the client address is taken from it only when this is set (`1` behind one proxy) |
 | `MCP_FAILED_AUTH_PER_IP` | `50` | HTTP: failed credentials allowed per client address in 15 minutes before it gets `429` with `Retry-After` |
-| `MCP_ALLOWED_ORIGINS` | (none) | Extra browser origins allowed to call `/mcp` (comma-separated, e.g. `https://app.example.com`); requests without `Origin` are always allowed |
+| `MCP_ALLOWED_ORIGINS` | (none) | Browser origins allowed to call `/mcp` (comma-separated, e.g. `http://localhost:6274,https://app.example.com`); no browser origin is allowed by default, loopback included; requests without `Origin` are always allowed |
 
 ## Notes
 
