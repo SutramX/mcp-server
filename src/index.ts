@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { SutramXClient, validateApiUrl, validateInternalApiUrl } from './client.js';
 import { clientIpHeaders, failedAuthLimitFromEnv, FailedAuthLimiter, isPrivateAddress, normaliseIp, trustProxyHops } from './clientIp.js';
 import { MutationLimiter, mutationLimitsFromEnv, policyForRequest, policyFromEnv, ToolPolicy } from './policy.js';
-import { isAllowedOrigin } from './auth.js';
+import { isAllowedOrigin, mayUseEnvKey } from './auth.js';
 import { bearerChallenge, bearerCredential, checkOAuthToken, MIN_RESOURCE_PROOF_LENGTH, oauthEnabled, oauthResourceConfig, oauthStartupProblem, protectedResourceMetadata, RESOURCE_PROOF_HEADER, resourceMetadataPaths, type Credential } from './oauth.js';
 import { DEFAULT_API_URL, SERVER_NAME, SERVER_VERSION } from './constants.js';
 import { createSutramXServer } from './server.js';
@@ -21,9 +21,10 @@ import { createSutramXServer } from './server.js';
  *                    (Authorization: Bearer sk_...), so one server can serve
  *                    many users. SUTRAMX_API_KEY is used as a fallback only
  *                    while the server listens on loopback, and only for
- *                    requests that send no Authorization header at all.
- *                    Browser requests must come from a loopback origin or
- *                    one in MCP_ALLOWED_ORIGINS.
+ *                    requests that send no Authorization header at all and
+ *                    either no Origin or one listed in MCP_ALLOWED_ORIGINS.
+ *                    Browser requests (any Origin, loopback included) must
+ *                    come from an origin in MCP_ALLOWED_ORIGINS.
  *                    Remote clients without a key (e.g. Claude.ai custom
  *                    connectors) sign in with OAuth 2.1 instead: a request
  *                    without credentials gets 401 + WWW-Authenticate pointing
@@ -195,7 +196,10 @@ async function runHttp(): Promise<void> {
         // An Authorization header that is not a SutramX key or OAuth access
         // token is rejected, never replaced by the server's own key.
         const sent = req.headers.authorization;
-        const credential: Credential | null = sent !== undefined ? bearerCredential(sent) : envKey ? { kind: 'api_key', token: envKey } : null;
+        // The server's own key is never lent to a browser page unless its origin
+        // is listed explicitly (a "*" entry does not count).
+        const fallbackKey = envKey && mayUseEnvKey(req.headers.origin, allowedOrigins) ? envKey : null;
+        const credential: Credential | null = sent !== undefined ? bearerCredential(sent) : fallbackKey ? { kind: 'api_key', token: fallbackKey } : null;
         if (!credential) {
             if (sent !== undefined) authFailed();
             res.setHeader('WWW-Authenticate', challenge(sent !== undefined ? { error: 'invalid_token', error_description: 'Unrecognised credential' } : {}));
