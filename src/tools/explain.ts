@@ -456,7 +456,7 @@ const FAULT_TEXT: Record<string, string> = {
     yours: 'your side (confirmed by the regional quorum, no external cause found)',
     external: 'likely external (a vendor or third party)',
     checker: 'likely our checker, not your site',
-    unknown: 'unknown',
+    unknown: '',
 };
 
 function regionLine(vote: RegionVoteView): string {
@@ -477,7 +477,7 @@ function explanationMarkdown(view: ExplanationView, heading: string): string[] {
     const lines = [
         `## ${heading}`,
         `- verdict: ${view.verdict}`,
-        `- fault: **${view.fault}**: ${FAULT_TEXT[view.fault] ?? view.fault}${view.fault_reason ? ` · ${view.fault_reason}` : ''}`,
+        `- fault: **${view.fault}**${FAULT_TEXT[view.fault] ? `: ${FAULT_TEXT[view.fault]}` : ''}${view.fault_reason ? ` · ${view.fault_reason}` : ''}`,
         `- failure: ${view.failure.label || 'none'}${view.failure.class ? ` (${view.failure.class})` : ''} · scope ${view.failure.scope.replace(/_/g, ' ')}`,
         `- quorum: ${quorum.rule || 'n/a'}: ${quorum.met ? 'met' : 'not met'}${counts}${quorum.abstaining.length ? ` · abstaining: ${quorum.abstaining.join(', ')}` : ''}`,
     ];
