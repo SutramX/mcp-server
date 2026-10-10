@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { test } from 'node:test';
 import { oauthEnabled, oauthStartupProblem } from '../src/oauth.js';
+import { freePort } from './helpers/freePort.js';
 
 /**
  * HTTP mode in production never forwards OAuth tokens without the resource
@@ -27,8 +28,8 @@ test('oauthStartupProblem: production needs a proof secret of at least 16 charac
 
 type Started = { started: boolean; code: number | null; stderr: string; url: string; stop: () => void; };
 
-function startHttp(extra: Record<string, string>, keep = false): Promise<Started> {
-    const port = 20000 + Math.floor(Math.random() * 20000);
+async function startHttp(extra: Record<string, string>, keep = false): Promise<Started> {
+    const port = await freePort();
     const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts', '--http'], {
         env: {
             ...process.env, HOST: '127.0.0.1', PORT: String(port), SUTRAMX_API_KEY: '',
