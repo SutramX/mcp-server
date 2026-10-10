@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { validateInternalApiUrl } from '../src/client.js';
 import { clientIpHeaders, failedAuthLimitFromEnv, FailedAuthLimiter, isPrivateAddress, normaliseIp, trustProxyHops } from '../src/clientIp.js';
+import { freePort } from './helpers/freePort.js';
 
 /**
  * Failed credentials are limited per client address (not per server), and
@@ -94,7 +95,7 @@ before(async () => {
         send(401, { error: 'Invalid token' });
     });
     await new Promise<void>((resolve) => api.listen(0, '127.0.0.1', resolve));
-    const port = 20000 + Math.floor(Math.random() * 20000);
+    const port = await freePort();
     mcp = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts', '--http'], {
         env: {
             ...process.env, HOST: '127.0.0.1', PORT: String(port), SUTRAMX_API_KEY: '',
@@ -107,14 +108,16 @@ before(async () => {
         stdio: ['ignore', 'ignore', 'pipe'],
     });
     await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('MCP server did not start')), 20000);
+        let stderr = '';
+        const timer = setTimeout(() => reject(new Error(`MCP server did not start: ${stderr}`)), 20000);
         mcp.stderr!.on('data', (chunk) => {
-            if (String(chunk).includes('listening on')) {
+            stderr += String(chunk);
+            if (stderr.includes('listening on')) {
                 clearTimeout(timer);
                 resolve();
             }
         });
-        mcp.once('exit', (code) => reject(new Error(`MCP server exited ${code}`)));
+        mcp.once('exit', (code) => reject(new Error(`MCP server exited ${code}: ${stderr}`)));
     });
     mcpUrl = `http://127.0.0.1:${port}`;
 });
