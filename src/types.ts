@@ -172,3 +172,74 @@ export interface MaintenanceWindow {
     recurrence?: { type?: string; weekdays?: number[]; until?: string | null; };
     [key: string]: unknown;
 }
+
+/** "Why this alert": GET /incidents/:id/explanation and GET /monitors/:id/explanation (fields the tools read). */
+export interface ExplanationVote {
+    region: string;
+    region_name: string;
+    status: 'up' | 'down' | 'blocked' | 'inconclusive' | 'unknown';
+    stored_status?: string | null;
+    checked_at: string | null;
+    error_type: string | null;
+    failure_class: string | null;
+    http_status: number | null;
+    message: string | null;
+    timings: { total_ms?: number; dns_ms?: number; connect_ms?: number; tls_ms?: number; ttfb_ms?: number; } | null;
+    confirming: boolean;
+}
+
+export interface ExplanationContributor {
+    kind: string;
+    title: string;
+    detail: string;
+    severity: 'info' | 'likely_cause';
+    source: string;
+    data?: unknown;
+}
+
+export interface IncidentExplanation {
+    version: number;
+    subject: 'incident' | 'monitor';
+    state: 'ongoing' | 'resolved' | 'failing_unconfirmed' | 'healthy' | 'no_data';
+    monitor: { id: string; name: string; type: string; url: string | null; };
+    incident_id: string | null;
+    opened_at: string | null;
+    resolved_at: string | null;
+    evaluated_at: string;
+    verdict: string;
+    fault: 'yours' | 'external' | 'checker' | 'unknown';
+    fault_reason: string;
+    is_flapping: boolean;
+    votes: ExplanationVote[];
+    quorum: {
+        rule: string;
+        required: number | null;
+        considered: number | null;
+        agreeing: number;
+        met: boolean;
+        abstaining: string[];
+        reduced_coverage: { missing_regions: string[]; usual_quorum: number | null; } | null;
+        confirmation: { state: 'confirmed' | 'refuted' | 'pending' | 'none'; summary: string; checks: unknown[]; } | null;
+    };
+    failure: { class: string | null; label: string; scope: string; failing_regions: string[]; passing_regions: string[]; };
+    alert: { notified: boolean; status: string; reason: string | null; detail: string; delivery: unknown; } | null;
+    contributors: ExplanationContributor[];
+    [key: string]: unknown;
+}
+
+export interface FlakinessWindow {
+    days: number;
+    score: number | null;
+    level: string;
+    label: string;
+    total_checks: number;
+    reasons: Array<{ kind: string; label: string; detail: string; count: number; points: number; }>;
+}
+
+/** GET /monitors/:id/flakiness. */
+export interface MonitorFlakiness {
+    monitor_id: string;
+    computed_at: string;
+    short_incident_seconds: number;
+    windows: { '7d': FlakinessWindow; '30d': FlakinessWindow; };
+}

@@ -19,6 +19,7 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_run_check` | Run one real check now | records a check |
 | `sutramx_get_check_results` | Check history by region and status, paginated | no |
 | `sutramx_list_incidents` / `sutramx_get_incident` | Incidents with confirming regions and acknowledgement | no |
+| `sutramx_explain_incident` | "Why is it down?" / "why did this alert fire?": by incident id, monitor id or monitor name/key, the verdict, whose fault it is (yours, external, our checker), each region's vote (blocked and inconclusive regions abstain), the quorum rule and whether it was met, the failure class, vendor signals and the 7/30-day flakiness score; a monitor with no open incident gets its current state plus its most recent incident | no |
 | `sutramx_acknowledge_incident` | Acknowledge (stops escalation) | yes |
 | `sutramx_resolve_incident` | Resolve by hand with a note | yes |
 | `sutramx_add_incident_note` | Add an internal timeline note (public status page updates only in destructive mode) | yes |
@@ -174,6 +175,7 @@ Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public UR
 - Billing, team members and API keys cannot be managed with an API key, and so not with this server. Per-monitor alert recipients (`config.notification_emails`) can only be set with an API key that has Automation access; other keys get a clear error.
 - Maintenance windows can be listed but not created, changed or deleted: they silence alerting, so the API makes them owner-only and refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`). SLO targets are set in the dashboard; `sutramx_uptime_report` reads them.
 - With a read-only key, `sutramx_whoami` reports `read_only: true`, and any write tool returns `READ_ONLY_ACCESS` with a hint telling the agent not to retry.
+- `sutramx_explain_incident` takes exactly one of `incident_id`, `monitor_id` or `monitor` (name, key or URL fragment). When several monitors match a name it returns `outcome: "ambiguous"` with up to 10 candidates and the agent is told to ask the user, never to pick one. Other outcomes: `ongoing`, `resolved`, `healthy`, `failing_unconfirmed`, `no_data` and `paused`; `in_maintenance` is set while a maintenance window silences alerts, and `incidents_total: 0` means the monitor never had an incident. The explanation is available on every plan. Vendor signals give the number of affected SutramX accounts only as a privacy-safe bucket (`several` / `many`). OAuth connections need `incidents:read` (incident explanations) and `monitors:read` (monitor state and flakiness).
 - `config` on `sutramx_update_monitor` replaces the whole object. Agents are told to read the monitor first and send the merged config.
 
 ## Security

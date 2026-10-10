@@ -59,7 +59,7 @@ test('the tool set is fixed: nothing reads files, runs commands or fetches arbit
     const { tools } = await (await connect({ readOnly: false, allowDestructive: true })).listTools();
     assert.deepEqual(tools.map((tool) => tool.name).sort(), [
         'sutramx_acknowledge_incident', 'sutramx_add_incident_note', 'sutramx_create_monitor', 'sutramx_create_status_page',
-        'sutramx_delete_monitor', 'sutramx_delete_status_page', 'sutramx_get_check_results', 'sutramx_get_incident', 'sutramx_get_monitor',
+        'sutramx_delete_monitor', 'sutramx_delete_status_page', 'sutramx_explain_incident', 'sutramx_get_check_results', 'sutramx_get_incident', 'sutramx_get_monitor',
         'sutramx_get_status_page', 'sutramx_list_incidents', 'sutramx_list_maintenance_windows', 'sutramx_list_monitors', 'sutramx_list_regions',
         'sutramx_list_status_pages', 'sutramx_monitor_summary', 'sutramx_pause_monitor', 'sutramx_resolve_incident', 'sutramx_resume_monitor',
         'sutramx_run_check', 'sutramx_set_status_page_monitors', 'sutramx_update_monitor', 'sutramx_update_status_page', 'sutramx_uptime_report',
