@@ -2,7 +2,7 @@
 
 All notable changes to `@sutramx/mcp-server` are listed here. Releases are the `vX.Y.Z` git tags and the versions on npm and the MCP Registry.
 
-## Unreleased
+## 0.1.6 (October 13, 2026)
 
 ### Fixed
 
