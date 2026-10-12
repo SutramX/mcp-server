@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DEFAULT_API_URL, REQUEST_TIMEOUT_MS, USER_AGENT } from './constants.js';
 
 /**
@@ -7,6 +8,13 @@ import { DEFAULT_API_URL, REQUEST_TIMEOUT_MS, USER_AGENT } from './constants.js'
  */
 
 export class SutramXApiError extends Error {
+    /** `category` from the error body (e.g. PLAN_LIMIT). */
+    declare category?: string;
+    /** Network failures (status 0): the cause code, e.g. ECONNREFUSED, ENOTFOUND, ETIMEDOUT, CERT_HAS_EXPIRED. */
+    declare causeCode?: string;
+    /** Retry-After of the response, in milliseconds. */
+    declare retryAfterMs?: number;
+
     constructor(
         public readonly status: number,
         message: string,
@@ -20,6 +28,91 @@ export class SutramXApiError extends Error {
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+/** One retry: an agent is waiting, and can call the tool again itself. */
+const MAX_ATTEMPTS = 2;
+/** A longer Retry-After is reported to the agent instead of waited for. */
+const MAX_RETRY_DELAY_MS = 5_000;
+/** Waits for a POST that is still running on the server (409 IDEMPOTENCY_REQUEST_IN_PROGRESS). */
+const MAX_IN_PROGRESS_WAITS = 10;
+
+/** Error codes that mean "the plan does not allow this": retrying does not help. */
+export const PLAN_LIMIT_CODES: ReadonlySet<string> = new Set([
+    'ENTITLEMENT_LIMIT_REACHED', 'ENTITLEMENT_INTERVAL_TOO_SHORT', 'MONITOR_TOTAL_LIMIT_REACHED', 'CONNECTION_LIMIT_REACHED',
+    'LIMIT_REACHED', 'AI_LIMIT_REACHED', 'FEATURE_NOT_AVAILABLE',
+]);
+
+export function isPlanLimit(error: unknown): boolean {
+    return error instanceof SutramXApiError && (error.category === 'PLAN_LIMIT' || (error.code !== undefined && PLAN_LIMIT_CODES.has(error.code)));
+}
+
+/** Retry-After as milliseconds: delta-seconds or an HTTP-date; null when absent or unreadable. */
+export function parseRetryAfter(value: string | null | undefined, now: number = Date.now()): number | null {
+    if (value === null || value === undefined) return null;
+    const trimmed = value.trim();
+    if (/^\d+(\.\d+)?$/.test(trimmed)) return Math.round(Number(trimmed) * 1000);
+    const date = Date.parse(trimmed);
+    if (!/[a-z]/i.test(trimmed) || Number.isNaN(date)) return null;
+    return Math.max(0, date - now);
+}
+
+function oneLine(text: string, max = 200): string {
+    const flat = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return flat.length > max ? `${flat.slice(0, max)}...` : flat;
+}
+
+const TLS_CODES = new Set([
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_GET_ISSUER_CERT',
+    'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER',
+]);
+const isTlsCode = (code: string | undefined) => Boolean(code && (code.startsWith('CERT_') || TLS_CODES.has(code)));
+
+/** fetch() failures carry the useful part (code, message) in `cause`, sometimes nested. */
+function networkError(error: unknown, host: string, timeoutMs: number): SutramXApiError {
+    const err = error as (Error & { code?: string; cause?: unknown; }) | undefined;
+    let code: string | undefined;
+    let detail: string;
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+        code = 'ETIMEDOUT';
+        detail = `no response within ${timeoutMs / 1000}s`;
+    } else {
+        detail = err?.message || String(error);
+        let cause: typeof err = err;
+        for (let depth = 0; cause && depth < 4; depth += 1) {
+            if (typeof cause.code === 'string' && !code) code = cause.code;
+            if (cause !== err && cause.message) detail = cause.message;
+            cause = cause.cause as typeof err;
+        }
+        if (code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT') code = 'ETIMEDOUT';
+    }
+    const failure = new SutramXApiError(0, `Could not reach the SutramX API at ${host}${code ? ` (${code})` : ''}: ${oneLine(detail)}`, code);
+    failure.causeCode = code;
+    return failure;
+}
+
+const retryableNetwork = (error: SutramXApiError) => !isTlsCode(error.causeCode) && error.causeCode !== 'ENOTFOUND' && !/redirect/i.test(error.message);
+
+interface Transport { fetch: typeof fetch; dispatcher?: unknown; }
+const PROXY_VARIABLES = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'];
+let proxyTransport: { signature: string; transport: Promise<Transport>; } | undefined;
+
+/**
+ * HTTPS_PROXY / HTTP_PROXY / NO_PROXY: Node's fetch ignores them, so when one
+ * is set requests go through undici's EnvHttpProxyAgent (which also honours
+ * NO_PROXY, e.g. for SUTRAMX_API_INTERNAL_URL). Nothing extra is loaded otherwise.
+ */
+function transport(env: NodeJS.ProcessEnv = process.env): Promise<Transport> | Transport {
+    if (!PROXY_VARIABLES.some((name) => env[name])) return { fetch: globalThis.fetch };
+    const signature = [...PROXY_VARIABLES, 'NO_PROXY', 'no_proxy'].map((name) => env[name] ?? '').join('\n');
+    if (proxyTransport?.signature !== signature) {
+        proxyTransport = {
+            signature,
+            transport: import('undici').then((undici) => ({ fetch: undici.fetch as unknown as typeof fetch, dispatcher: new undici.EnvHttpProxyAgent() })),
+        };
+    }
+    return proxyTransport.transport;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The key goes in every request: https only (plain http just for loopback). */
 export function validateApiUrl(raw: string): string {
@@ -79,6 +172,8 @@ export interface RequestOptions {
     anonymous?: boolean;
     /** Largest response body accepted (default MAX_RESPONSE_BYTES). */
     maxBytes?: number;
+    /** Idempotency-Key for a POST; one is generated when left out. */
+    idempotencyKey?: string;
 }
 
 /** Reads at most maxBytes of the body, whatever Content-Length claims. */
@@ -100,13 +195,26 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
     return Buffer.concat(chunks).toString('utf8');
 }
 
+/** Parsed JSON, the text itself when it is not JSON, undefined when empty. */
+function parseJson(text: string): unknown {
+    if (!text) return undefined;
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
 /** The backend answers errors in three shapes; normalise them. */
 export function parseErrorBody(status: number, body: unknown): SutramXApiError {
     if (body && typeof body === 'object') {
         const record = body as Record<string, unknown>;
         if (record.error && typeof record.error === 'object') {
             const nested = record.error as Record<string, unknown>;
-            return new SutramXApiError(status, String(nested.message || `HTTP ${status}`), nested.code ? String(nested.code) : undefined, nested.details);
+            const error = new SutramXApiError(status, String(nested.message || `HTTP ${status}`), nested.code ? String(nested.code) : undefined, nested.details);
+            const category = record.category ?? nested.category;
+            if (typeof category === 'string') error.category = category;
+            return error;
         }
         if (typeof record.error === 'string') {
             const fieldErrors = Array.isArray(record.errors)
@@ -114,8 +222,15 @@ export function parseErrorBody(status: number, body: unknown): SutramXApiError {
                 : '';
             const message = fieldErrors ? `${record.error}: ${fieldErrors}` : record.error;
             const { error: _e, code: _c, errors: _errs, ...rest } = record;
-            return new SutramXApiError(status, message, record.code ? String(record.code) : undefined, Object.keys(rest).length ? rest : record.errors);
+            const error = new SutramXApiError(status, message, record.code ? String(record.code) : undefined, Object.keys(rest).length ? rest : record.errors);
+            if (typeof record.category === 'string') error.category = record.category;
+            return error;
         }
+    }
+    // Plain-text 429 (older rate limiters): keep its readable message, never an HTML page.
+    if (status === 429) {
+        const readable = typeof body === 'string' && body.trim() && !body.trimStart().startsWith('<');
+        return new SutramXApiError(status, readable ? oneLine(body) : `HTTP ${status}`, 'RATE_LIMITED');
     }
     return new SutramXApiError(status, `HTTP ${status}`);
 }
@@ -141,60 +256,125 @@ export class SutramXClient {
         this.baseUrl = clientOptions.internal ? validateInternalApiUrl(baseUrl) : validateApiUrl(baseUrl);
     }
 
+    /** Delay before a retry (tests set it to 0). */
+    retryDelay: (attempt: number, retryAfter: string | null) => number = (attempt, retryAfter) => parseRetryAfter(retryAfter) ?? 300 * 2 ** attempt + Math.floor(Math.random() * 200);
+
     async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
         const url = new URL(`${this.baseUrl}${path}`);
         for (const [key, value] of Object.entries(options.query || {})) {
             if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
         }
-        const headers: Record<string, string> = { ...this.clientOptions.relayHeaders, Accept: 'application/json', 'User-Agent': USER_AGENT };
+        const headers: Record<string, string> = { ...this.clientOptions.relayHeaders, Accept: 'application/json', 'User-Agent': USER_AGENT, 'X-SutramX-Client': USER_AGENT };
         if (!options.anonymous) {
             Object.assign(headers, this.authHeaders);
             headers.Authorization = `Bearer ${this.apiKey}`;
         }
         if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+        // One key per tool call's POST, reused by its retry: the API runs it once (older APIs ignore it).
+        const idempotencyKey = method === 'POST' ? (options.idempotencyKey ?? randomUUID()) : undefined;
+        if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
+        // GET/PUT/DELETE and keyed POSTs are retried once on network errors,
+        // timeouts, 502/503/504 and 429; PATCH never (it may have run).
+        const retrySafe = method === 'GET' || method === 'PUT' || method === 'DELETE' || idempotencyKey !== undefined;
+        const deadline = Date.now() + REQUEST_TIMEOUT_MS * 2;
+        const { fetch: fetchImpl, dispatcher } = await transport();
+        const payload = options.body !== undefined ? JSON.stringify(options.body) : undefined;
+        const maxBytes = options.maxBytes ?? MAX_RESPONSE_BYTES;
+        const nextDelay = (attempt: number, retryAfter: string | null): number | null => {
+            if (attempt >= MAX_ATTEMPTS - 1) return null;
+            const delay = Math.max(0, this.retryDelay(attempt, retryAfter));
+            return delay > MAX_RETRY_DELAY_MS || Date.now() + delay >= deadline ? null : delay;
+        };
 
         let response: Response;
-        try {
-            response = await fetch(url, {
-                method,
-                headers,
-                body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-                // The API never redirects; a redirect must not carry the key elsewhere.
-                redirect: 'error',
-            });
-        } catch (error) {
-            const reason = (error as Error).name === 'TimeoutError' ? `timed out after ${REQUEST_TIMEOUT_MS / 1000}s` : (error as Error).message;
-            throw new SutramXApiError(0, `Could not reach the SutramX API at ${this.baseUrl}: ${reason}`);
+        let text: string | undefined;
+        let inProgressWaits = 0;
+        for (let attempt = 0; ; attempt += 1) {
+            const timeout = Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now()));
+            try {
+                response = await fetchImpl(url, {
+                    method,
+                    headers,
+                    body: payload,
+                    signal: AbortSignal.timeout(timeout),
+                    // The API never redirects; a redirect must not carry the key elsewhere.
+                    redirect: 'error',
+                    ...(dispatcher ? { dispatcher } : {}),
+                } as RequestInit);
+            } catch (error) {
+                const failure = networkError(error, url.host, REQUEST_TIMEOUT_MS);
+                const delay = retrySafe && retryableNetwork(failure) ? nextDelay(attempt, null) : null;
+                if (delay === null) throw failure;
+                await sleep(delay);
+                continue;
+            }
+            text = undefined;
+            const status = response.status;
+            if (status === 409 && idempotencyKey) {
+                text = await this.read(response, maxBytes, url.host);
+                // The same POST is still running on the server: wait, then ask again with the same key.
+                if (parseErrorBody(status, parseJson(text)).code === 'IDEMPOTENCY_REQUEST_IN_PROGRESS' && inProgressWaits < MAX_IN_PROGRESS_WAITS) {
+                    inProgressWaits += 1;
+                    const delay = Math.min(Math.max(0, this.retryDelay(0, response.headers.get('retry-after') ?? '1')), MAX_RETRY_DELAY_MS);
+                    if (Date.now() + delay < deadline) {
+                        await sleep(delay);
+                        attempt -= 1; // not a failed attempt
+                        continue;
+                    }
+                }
+            }
+            if (status === 429 || (retrySafe && [502, 503, 504].includes(status))) {
+                text = await this.read(response, maxBytes, url.host);
+                // A plan limit can come as 429 (AI drafts): waiting does not help.
+                const delay = isPlanLimit(parseErrorBody(status, parseJson(text))) ? null : nextDelay(attempt, response.headers.get('retry-after'));
+                if (delay !== null) {
+                    await sleep(delay);
+                    continue;
+                }
+            }
+            break;
         }
         if (response.status === 401 && !options.anonymous) this.clientOptions.onAuthFailure?.();
-        if (response.status === 204) return undefined as T;
-        const maxBytes = options.maxBytes ?? MAX_RESPONSE_BYTES;
-        const tooLarge = () => new SutramXApiError(response.status, 'Response too large; use filters or a smaller limit');
+        if (response.status === 204 || response.status === 205) return undefined as T;
+        if (text === undefined) text = await this.read(response, maxBytes, url.host);
+        if (!response.ok) {
+            const error = parseErrorBody(response.status, parseJson(text));
+            const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
+            if (retryAfter !== null) error.retryAfterMs = retryAfter;
+            throw error;
+        }
+        if (!text.trim()) return undefined as T;
+        try {
+            return JSON.parse(text) as T;
+        } catch {
+            const type = response.headers.get('content-type') || 'no content type';
+            throw new SutramXApiError(response.status, `Expected JSON from the SutramX API at ${url.host} but got ${oneLine(type, 60)} ("${oneLine(text, 80)}"); a proxy or a wrong SUTRAMX_API_URL can cause this`, 'INVALID_RESPONSE');
+        }
+    }
+
+    /** The body, at most maxBytes of it whatever Content-Length claims. */
+    private async read(response: Response, maxBytes: number, host: string): Promise<string> {
+        const tooLarge = () => new SutramXApiError(response.status, 'Response too large; use filters or a smaller limit', 'RESPONSE_TOO_LARGE');
         if (Number(response.headers.get('content-length') || 0) > maxBytes) {
             await response.body?.cancel().catch(() => undefined);
             throw tooLarge();
         }
-        const text = await readBounded(response, maxBytes);
-        if (text === null) throw tooLarge();
-        let body: unknown = undefined;
-        if (text) {
-            try {
-                body = JSON.parse(text);
-            } catch {
-                body = text;
-            }
+        let text: string | null;
+        try {
+            text = await readBounded(response, maxBytes);
+        } catch (error) {
+            throw networkError(error, host, REQUEST_TIMEOUT_MS);
         }
-        if (!response.ok) throw parseErrorBody(response.status, body);
-        return body as T;
+        if (text === null) throw tooLarge();
+        return text;
     }
 
     get<T>(path: string, query?: Query, anonymous = false) {
         return this.request<T>('GET', path, { query, anonymous });
     }
 
-    post<T>(path: string, body?: unknown) {
-        return this.request<T>('POST', path, { body: body ?? {} });
+    post<T>(path: string, body?: unknown, options: { idempotencyKey?: string; } = {}) {
+        return this.request<T>('POST', path, { ...options, body: body ?? {} });
     }
 
     put<T>(path: string, body?: unknown) {
@@ -215,20 +395,25 @@ export function describeApiError(error: unknown): string {
     if (!(error instanceof SutramXApiError)) return `Error: ${(error as Error)?.message || String(error)}`;
     const code = error.code ? ` [${error.code}]` : '';
     const hint = (() => {
-        if (error.status === 0) return 'Check SUTRAMX_API_URL and your network connection.';
+        if (error.status === 0) {
+            if (error.causeCode === 'ETIMEDOUT') return 'The SutramX API did not answer in time; retry in a minute.';
+            if (isTlsCode(error.causeCode)) return 'The TLS certificate could not be verified (a TLS-inspecting proxy needs NODE_EXTRA_CA_CERTS). Tell the user; do not retry.';
+            return 'Check SUTRAMX_API_URL, HTTPS_PROXY / NO_PROXY and the network connection.';
+        }
+        if (isPlanLimit(error)) return 'This needs a higher plan or fewer resources; tell the user rather than retrying.';
         if (error.status === 401) return 'The API key is missing, wrong, revoked or disabled. Create a key in SutramX → Settings → API keys.';
         if (error.code === 'OAUTH_SCOPE_REQUIRED') return 'The user did not give this app that permission when connecting it. Tell the user; they can reconnect the SutramX connector and tick it. Do not retry.';
         if (error.code === 'OAUTH_ENDPOINT_NOT_ALLOWED') return 'Apps connected with OAuth can only use monitors, incidents and status pages. Do not retry.';
         if (error.code === 'OAUTH_INVALID_TOKEN') return 'The connection to SutramX expired or was revoked; the user must reconnect it.';
         if (error.code === 'READ_ONLY_ACCESS') return 'This API key is read-only, so it cannot change anything. Tell the user; do not retry. A workspace owner can create a standard key if changes are really needed.';
         if (error.code === 'AUTOMATION_KEY_REQUIRED') return 'Use an API key created with "Automation access".';
-        if (error.code === 'FEATURE_NOT_AVAILABLE' || error.code === 'ENTITLEMENT_LIMIT_REACHED') return 'This needs a higher plan or fewer resources; tell the user rather than retrying.';
         if (error.status === 403) return 'The key is not allowed to do this (some settings are owner-only in the dashboard).';
         if (error.status === 404) return 'Check the id: list the resources first to find a valid one.';
         if (error.status === 409) return 'The resource is in a state that does not allow this (for example already resolved or paused).';
-        if (error.status === 429) return 'Rate limited: wait a minute before retrying.';
+        if (error.status === 429) return error.retryAfterMs !== undefined ? `Rate limited: wait ${Math.ceil(error.retryAfterMs / 1000)}s before retrying.` : 'Rate limited: wait a minute before retrying.';
         if (error.status >= 500) return 'SutramX had an internal error; retry later.';
         return '';
     })();
-    return `Error (HTTP ${error.status}${code}): ${error.message}${hint ? `\nHint: ${hint}` : ''}`;
+    const where = error.status === 0 ? 'network' : `HTTP ${error.status}${code}`;
+    return `Error (${where}): ${error.message}${hint ? `\nHint: ${hint}` : ''}`;
 }

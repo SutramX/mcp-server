@@ -332,7 +332,7 @@ export interface ExplainApi {
 }
 
 function noteOf(what: string, error: unknown): string {
-    return `${what} could not be loaded: ${error instanceof SutramXApiError ? `HTTP ${error.status}${error.code ? ` ${error.code}` : ''}` : (error as Error)?.message || String(error)}`;
+    return `${what} could not be loaded: ${error instanceof SutramXApiError && error.status !== 0 ? `HTTP ${error.status}${error.code ? ` ${error.code}` : ''}` : (error as Error)?.message || String(error)}`;
 }
 
 export function isNotFound(error: unknown): boolean {

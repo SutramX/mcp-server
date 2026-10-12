@@ -168,10 +168,12 @@ Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public UR
 | `TRUST_PROXY_HOPS` | `0` | HTTP: number of reverse proxies in front of the server that set `X-Forwarded-For`; the client address is taken from it only when this is set (`1` behind one proxy) |
 | `MCP_FAILED_AUTH_PER_IP` | `50` | HTTP: failed credentials allowed per client address in 15 minutes before it gets `429` with `Retry-After` |
 | `MCP_ALLOWED_ORIGINS` | (none) | Browser origins allowed to call `/mcp` (comma-separated, e.g. `http://localhost:6274,https://app.example.com`); no browser origin is allowed by default, loopback included; requests without `Origin` are always allowed |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` (or lower case) | (none) | Send API calls through a proxy; hosts in `NO_PROXY` (e.g. the `SUTRAMX_API_INTERNAL_URL` host) go direct. Behind a TLS-inspecting proxy, point `NODE_EXTRA_CA_CERTS` at its CA certificate |
 
 ## Notes
 
-- Plan limits apply exactly as in the dashboard. When a tool returns `ENTITLEMENT_LIMIT_REACHED` or `FEATURE_NOT_AVAILABLE`, the plan does not allow it.
+- Plan limits apply exactly as in the dashboard. When a tool returns an error with `category: PLAN_LIMIT` or one of `ENTITLEMENT_LIMIT_REACHED`, `ENTITLEMENT_INTERVAL_TOO_SHORT`, `MONITOR_TOTAL_LIMIT_REACHED`, `CONNECTION_LIMIT_REACHED`, `LIMIT_REACHED`, `AI_LIMIT_REACHED` or `FEATURE_NOT_AVAILABLE`, the plan does not allow it and the agent is told not to retry.
+- API calls: every `POST` carries an `Idempotency-Key` that its retry reuses, so the API runs it once. Reads, `PUT`, `DELETE` and those `POST`s are retried once after a network error, a timeout (30 seconds), HTTP 502/503/504 or 429 (honouring `Retry-After`, in seconds or as a date, up to 5 seconds; a longer wait is returned to the agent). A network failure names its cause and host (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `CERT_*` ...); a response that is not JSON is an error. Calls carry `User-Agent` and `X-SutramX-Client: sutramx-mcp-server/<version>`.
 - Billing, team members and API keys cannot be managed with an API key, and so not with this server. Per-monitor alert recipients (`config.notification_emails`) can only be set with an API key that has Automation access; other keys get a clear error.
 - Maintenance windows can be listed but not created, changed or deleted: they silence alerting, so the API makes them owner-only and refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`). SLO targets are set in the dashboard; `sutramx_uptime_report` reads them.
 - With a read-only key, `sutramx_whoami` reports `read_only: true`, and any write tool returns `READ_ONLY_ACCESS` with a hint telling the agent not to retry.
