@@ -230,13 +230,33 @@ const IDEMPOTENT_POST_ROUTES: readonly RegExp[] = [
 ];
 
 /**
+ * POST routes that only read (nothing changes on the server), so a retry is
+ * safe without an Idempotency-Key. Not deduped by the API: keep them out of
+ * IDEMPOTENT_POST_ROUTES.
+ */
+const SAFE_POST_ROUTES: readonly RegExp[] = [
+    /^\/automation\/monitors\/plan$/,
+];
+
+/** `path` without query string, fragment, /api or /v1 prefix and trailing slash. */
+function routeOf(path: string): string {
+    const normalized = path.split(/[?#]/, 1)[0].replace(/^\/api(?=\/|$)/, '').replace(/^\/v1(?=\/|$)/, '');
+    return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized;
+}
+
+/**
  * True when a POST to `path` (no query string; an /api or /v1 prefix and a
  * trailing slash are ignored) is one the API dedupes by Idempotency-Key.
  */
 export function isIdempotentPostRoute(path: string): boolean {
-    let normalized = path.split(/[?#]/, 1)[0].replace(/^\/api(?=\/|$)/, '').replace(/^\/v1(?=\/|$)/, '');
-    if (normalized.length > 1) normalized = normalized.replace(/\/+$/, '');
-    return IDEMPOTENT_POST_ROUTES.some((pattern) => pattern.test(normalized));
+    const route = routeOf(path);
+    return IDEMPOTENT_POST_ROUTES.some((pattern) => pattern.test(route));
+}
+
+/** True when a POST to `path` only reads, so it may be retried like a GET. */
+export function isSafePostRoute(path: string): boolean {
+    const route = routeOf(path);
+    return SAFE_POST_ROUTES.some((pattern) => pattern.test(route));
 }
 
 /** The backend answers errors in three shapes; normalise them. */
@@ -312,11 +332,12 @@ export class SutramXClient {
         const basePath = new URL(this.baseUrl).pathname.replace(/\/+$/, '');
         const routePath = basePath && url.pathname.startsWith(`${basePath}/`) ? url.pathname.slice(basePath.length) : url.pathname;
         const dedupedPost = idempotencyKey !== undefined && isIdempotentPostRoute(routePath);
-        // Retried once on network errors, timeouts, 502/503/504 and 429:
-        // GET/PUT/DELETE and the POSTs the API dedupes. Any other POST is sent
-        // once (the server may already have run it); PATCH only on 429.
-        const retrySafe = method === 'GET' || method === 'PUT' || method === 'DELETE' || dedupedPost;
-        const retry429 = method !== 'POST' || dedupedPost;
+        // 429 is retried for every method: the API's rate limiters answer
+        // before the handler, so the request did not run. 502/503/504,
+        // timeouts and network errors: GET, PUT, DELETE, the POSTs the API
+        // dedupes by their Idempotency-Key and the read-only POSTs
+        // (SAFE_POST_ROUTES). Any other POST (an action) is sent once.
+        const retrySafe = method === 'GET' || method === 'PUT' || method === 'DELETE' || dedupedPost || (method === 'POST' && isSafePostRoute(routePath));
         const deadline = Date.now() + REQUEST_TIMEOUT_MS * 2;
         const { fetch: fetchImpl, dispatcher } = await transport();
         const payload = options.body !== undefined ? JSON.stringify(options.body) : undefined;
@@ -364,7 +385,7 @@ export class SutramXClient {
                     }
                 }
             }
-            if ((status === 429 && retry429) || (retrySafe && [502, 503, 504].includes(status))) {
+            if (status === 429 || (retrySafe && [502, 503, 504].includes(status))) {
                 text = await this.read(response, maxBytes, url.host);
                 // A plan limit can come as 429 (AI drafts): waiting does not help.
                 const delay = isPlanLimit(parseErrorBody(status, parseJson(text))) ? null : nextDelay(attempt, response.headers.get('retry-after'));

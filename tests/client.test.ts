@@ -3,7 +3,7 @@ import http from 'node:http';
 import { type AddressInfo, connect } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { afterEach, test } from 'node:test';
-import { describeApiError, isIdempotentPostRoute, isPlanLimit, parseRetryAfter, SutramXApiError, SutramXClient } from '../src/client.js';
+import { describeApiError, isIdempotentPostRoute, isSafePostRoute, isPlanLimit, parseRetryAfter, SutramXApiError, SutramXClient } from '../src/client.js';
 import { USER_AGENT } from '../src/constants.js';
 
 interface Seen { method: string; url: string; headers: http.IncomingHttpHeaders; }
@@ -81,7 +81,7 @@ test('M1: 409 IDEMPOTENCY_REQUEST_IN_PROGRESS waits and asks again with the same
     assert.deepEqual(retryAfters, ['1']);
 });
 
-test('only the POST routes the API dedupes are retried; acknowledge, resolve, run-check, pause, resume are sent once', async () => {
+test('only the POST routes the API dedupes (and the read-only plan) are retried; acknowledge, resolve, run-check, pause, resume are sent once, except after a 429', async () => {
     for (const path of ['/monitors', '/v1/monitors', '/monitors/', '/monitors?x=1', '/monitors/bulk', '/monitors/detect/apply', '/monitor-groups', '/status/pages',
         '/status/pages/p1/monitors', '/integrations/slack/connections', '/integrations/slack/connect', '/incidents', '/incidents/runbooks',
         '/incidents/i1/notes', '/maintenance', '/automation/monitors/apply', '/api/v1/maintenance']) {
@@ -98,9 +98,24 @@ test('only the POST routes the API dedupes are retried; acknowledge, resolve, ru
     }
     assert.equal(unavailable.seen.length, 5, 'each action attempted once');
 
-    const limited = await serve((_req, res) => json(res, 429, { error: 'slow down' }, { 'Retry-After': '0' }));
-    await assert.rejects(client(limited.url).post('/monitors/m1/run-check', {}), (error: unknown) => error instanceof SutramXApiError && error.status === 429);
-    assert.equal(limited.seen.length, 1);
+    // 429 is retried for an action too (the rate limiter answered before the handler ran).
+    const limited = await serve((_req, res, index) => {
+        if (index === 0) return json(res, 429, { error: 'slow down' }, { 'Retry-After': '0' });
+        json(res, 200, { ok: true });
+    });
+    assert.deepEqual(await client(limited.url).post('/monitors/m1/run-check', {}), { ok: true });
+    assert.equal(limited.seen.length, 2);
+
+    // The read-only plan POST is retried on 503 like a read; it is not a deduped create.
+    assert.ok(isSafePostRoute('/automation/monitors/plan') && isSafePostRoute('/v1/automation/monitors/plan/'));
+    assert.ok(!isSafePostRoute('/automation/monitors/apply') && !isSafePostRoute('/incidents/i1/resolve'));
+    const planning = await serve((_req, res, index) => {
+        if (index === 0) return json(res, 503, { error: 'busy' });
+        json(res, 200, { monitors: [] });
+    });
+    assert.deepEqual(await client(planning.url).post('/automation/monitors/plan', {}), { monitors: [] });
+    assert.equal(planning.seen.length, 2);
+    // A dropped connection: the action is not repeated.
     const dropped = await serve((req) => req.socket.destroy());
     await assert.rejects(client(dropped.url).post('/incidents/i1/acknowledge', {}), (error: unknown) => error instanceof SutramXApiError && error.status === 0);
     assert.equal(dropped.seen.length, 1);
