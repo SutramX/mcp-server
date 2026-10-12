@@ -93,6 +93,17 @@ test('creating an mcp monitor sends type, url and config; stored headers come ba
     assert.equal(result.structuredContent.monitor.config.headers.Authorization, '[REDACTED]');
 });
 
+test('a renamed location code (the Arizona one) is accepted and sent as typed (the API maps it to the current code)', async () => {
+    const client = await connect();
+    const result: any = await client.callTool({ name: 'sutramx_create_monitor', arguments: { name: 'AZ', url: 'https://example.com', regions: ['usa-az-probe'] } });
+    assert.equal(result.isError, undefined, text(result));
+    const post = calls.find((call) => call.method === 'POST' && call.url.pathname === '/monitors')!;
+    assert.deepEqual(post.body.regions, ['usa-az-probe']);
+    const tools = await client.listTools();
+    const create = tools.tools.find((tool) => tool.name === 'sutramx_create_monitor')!;
+    assert.doesNotMatch(JSON.stringify(create.inputSchema), /probe/i, 'tool descriptions use the current code');
+});
+
 test('run_check renders mcp details with everything from the remote server fenced', async () => {
     const client = await connect();
     const out = text(await client.callTool({ name: 'sutramx_run_check', arguments: { monitor_id: MONITOR_ID } }));

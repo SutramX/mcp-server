@@ -11,6 +11,7 @@ All notable changes to `@sutramx/mcp-server` are listed here. Releases are the `
 - Plan limits (`category: PLAN_LIMIT` and every limit code, also when sent as 429) tell the agent that a higher plan is needed and not to retry.
 - A network failure names its cause and the host (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, certificate errors) instead of `HTTP 0`. A response that is not JSON is an error, and a plain-text 429 body is shown as the message.
 - Tool descriptions say "monitoring locations".
+- The Arizona, USA monitoring location code is now `usa-az` (`sutramx_list_regions` lists it) and tool descriptions use it. The earlier code is still accepted in `regions`; the API saves and returns it as `usa-az`.
 
 ### Added
 
