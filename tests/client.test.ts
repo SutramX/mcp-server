@@ -3,7 +3,7 @@ import http from 'node:http';
 import { type AddressInfo, connect } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { afterEach, test } from 'node:test';
-import { describeApiError, isPlanLimit, parseRetryAfter, SutramXApiError, SutramXClient } from '../src/client.js';
+import { describeApiError, isIdempotentPostRoute, isSafePostRoute, isPlanLimit, parseRetryAfter, SutramXApiError, SutramXClient } from '../src/client.js';
 import { USER_AGENT } from '../src/constants.js';
 
 interface Seen { method: string; url: string; headers: http.IncomingHttpHeaders; }
@@ -79,6 +79,62 @@ test('M1: 409 IDEMPOTENCY_REQUEST_IN_PROGRESS waits and asks again with the same
     assert.equal(seen.length, 2);
     assert.equal(seen[1].headers['idempotency-key'], seen[0].headers['idempotency-key']);
     assert.deepEqual(retryAfters, ['1']);
+});
+
+test('only the POST routes the API dedupes (and the read-only plan) are retried; acknowledge, resolve, run-check, pause, resume are sent once, except after a 429', async () => {
+    for (const path of ['/monitors', '/v1/monitors', '/monitors/', '/monitors?x=1', '/monitors/bulk', '/monitors/detect/apply', '/monitor-groups', '/status/pages',
+        '/status/pages/p1/monitors', '/integrations/slack/connections', '/integrations/slack/connect', '/incidents', '/incidents/runbooks',
+        '/incidents/i1/notes', '/maintenance', '/automation/monitors/apply', '/api/v1/maintenance']) {
+        assert.ok(isIdempotentPostRoute(path), path);
+    }
+    for (const path of ['/incidents/i1/acknowledge', '/incidents/i1/resolve', '/monitors/m1/run-check', '/monitors/m1/pause', '/monitors/m1/resume',
+        '/integrations/slack/connections/c1/test', '/monitors/m1/heartbeat/rotate-secret', '/automation/monitors/plan', '/monitors/m1', '/ai']) {
+        assert.ok(!isIdempotentPostRoute(path), path);
+    }
+
+    const unavailable = await serve((_req, res) => json(res, 503, { error: 'busy' }));
+    for (const path of ['/incidents/i1/acknowledge', '/incidents/i1/resolve', '/monitors/m1/run-check', '/monitors/m1/pause', '/monitors/m1/resume']) {
+        await assert.rejects(client(unavailable.url).post(path, {}), (error: unknown) => error instanceof SutramXApiError && error.status === 503);
+    }
+    assert.equal(unavailable.seen.length, 5, 'each action attempted once');
+
+    // 429 is retried for an action too (the rate limiter answered before the handler ran).
+    const limited = await serve((_req, res, index) => {
+        if (index === 0) return json(res, 429, { error: 'slow down' }, { 'Retry-After': '0' });
+        json(res, 200, { ok: true });
+    });
+    assert.deepEqual(await client(limited.url).post('/monitors/m1/run-check', {}), { ok: true });
+    assert.equal(limited.seen.length, 2);
+
+    // The read-only plan POST is retried on 503 like a read; it is not a deduped create.
+    assert.ok(isSafePostRoute('/automation/monitors/plan') && isSafePostRoute('/v1/automation/monitors/plan/'));
+    assert.ok(!isSafePostRoute('/automation/monitors/apply') && !isSafePostRoute('/incidents/i1/resolve'));
+    const planning = await serve((_req, res, index) => {
+        if (index === 0) return json(res, 503, { error: 'busy' });
+        json(res, 200, { monitors: [] });
+    });
+    assert.deepEqual(await client(planning.url).post('/automation/monitors/plan', {}), { monitors: [] });
+    assert.equal(planning.seen.length, 2);
+    // A dropped connection: the action is not repeated.
+    const dropped = await serve((req) => req.socket.destroy());
+    await assert.rejects(client(dropped.url).post('/incidents/i1/acknowledge', {}), (error: unknown) => error instanceof SutramXApiError && error.status === 0);
+    assert.equal(dropped.seen.length, 1);
+
+    // A base URL with a path prefix: the route is matched after it, and the retry reuses the key.
+    const prefixed = await serve((_req, res, index) => (index === 0 ? json(res, 503, { error: 'busy' }) : json(res, 201, { id: 'p1' })));
+    assert.deepEqual(await client(`${prefixed.url}/api/v1`).post('/status/pages', {}), { id: 'p1' });
+    assert.equal(prefixed.seen.length, 2);
+    assert.equal(prefixed.seen[0].url, '/api/v1/status/pages');
+    assert.equal(prefixed.seen[1].headers['idempotency-key'], prefixed.seen[0].headers['idempotency-key']);
+});
+
+test('409 IDEMPOTENT_RESPONSE_WITHHELD is an error, not retried; IN_PROGRESS on a route the API does not dedupe is not waited on', async () => {
+    const withheld = await serve((_req, res) => json(res, 409, { error: 'The original response held a secret', code: 'IDEMPOTENT_RESPONSE_WITHHELD' }));
+    await assert.rejects(client(withheld.url).post('/monitors', {}), (error: unknown) => error instanceof SutramXApiError && error.code === 'IDEMPOTENT_RESPONSE_WITHHELD');
+    assert.equal(withheld.seen.length, 1);
+    const inProgress = await serve((_req, res) => json(res, 409, { error: 'running', code: 'IDEMPOTENCY_REQUEST_IN_PROGRESS' }, { 'Retry-After': '1' }));
+    await assert.rejects(client(inProgress.url).post('/incidents/i1/resolve', {}), (error: unknown) => error instanceof SutramXApiError && error.status === 409);
+    assert.equal(inProgress.seen.length, 1);
 });
 
 test('GETs are retried once on 5xx, 429 and network errors (Retry-After honoured), then the error is returned', async () => {
