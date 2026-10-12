@@ -3,7 +3,7 @@ import { DEFAULT_API_URL, REQUEST_TIMEOUT_MS, USER_AGENT } from './constants.js'
 
 /**
  * Minimal SutramX REST client authenticated with an API key
- * (Authorization: Bearer sk_...). Every request is scoped by the backend to
+ * (Authorization: Bearer sk_...). Every request is scoped by the API to
  * the workspace the key belongs to.
  */
 
@@ -206,10 +206,10 @@ function parseJson(text: string): unknown {
 }
 
 /**
- * POST routes the API runs at most once per Idempotency-Key. Mirrors
- * IDEMPOTENT_ROUTES in backend/src/middleware/idempotency.ts (path after the
- * optional /v1 prefix, no trailing slash): keep the two lists in step. Only
- * these POSTs are retried; every other POST (acknowledge, resolve, run-check,
+ * POST routes the API runs at most once per Idempotency-Key (path after the
+ * optional /v1 prefix, no trailing slash), as listed in the API reference.
+ * Only these POSTs and the read-only SAFE_POST_ROUTES are retried after a
+ * network error, a timeout or a 5xx (a 429 is retried for every request); every other POST (acknowledge, resolve, run-check,
  * pause, resume, test, rotate-secret ...) is sent once, because the API would
  * run it again.
  */
@@ -259,7 +259,7 @@ export function isSafePostRoute(path: string): boolean {
     return SAFE_POST_ROUTES.some((pattern) => pattern.test(route));
 }
 
-/** The backend answers errors in three shapes; normalise them. */
+/** The API answers errors in three shapes; normalise them. */
 export function parseErrorBody(status: number, body: unknown): SutramXApiError {
     if (body && typeof body === 'object') {
         const record = body as Record<string, unknown>;

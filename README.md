@@ -29,9 +29,9 @@ It talks to the public SutramX API with a workspace API key, so it can do exactl
 | `sutramx_delete_status_page` | Delete a page (hidden unless deletes are enabled) | yes, destructive |
 | `sutramx_uptime_report` | Uptime %, incidents, MTTR and health score per monitor over 7/14/30/90 days, plus SLO error budgets and burn rates | no |
 | `sutramx_list_maintenance_windows` | Maintenance windows (scope, schedule, recurrence); filter by state | no |
-| `sutramx_list_regions` | Probe locations and their codes | no |
+| `sutramx_list_regions` | Monitoring locations and their codes | no |
 
-Destructive tools are annotated with `destructiveHint`, so clients that support it ask before running them. Read tools carry `readOnlyHint` and `openWorldHint: false` (they only read your workspace); tools that make probes contact outside targets, publish, or notify people carry `openWorldHint: true`.
+Destructive tools are annotated with `destructiveHint`, so clients that support it ask before running them. Read tools carry `readOnlyHint` and `openWorldHint: false` (they only read your workspace); tools that make SutramX contact outside targets, publish, or notify people carry `openWorldHint: true`.
 
 ### Access modes
 
@@ -173,7 +173,7 @@ Self-hosting the HTTP server with OAuth: set `MCP_RESOURCE_URL` to the public UR
 ## Notes
 
 - Plan limits apply exactly as in the dashboard. When a tool returns an error with `category: PLAN_LIMIT` or one of `ENTITLEMENT_LIMIT_REACHED`, `ENTITLEMENT_INTERVAL_TOO_SHORT`, `MONITOR_TOTAL_LIMIT_REACHED`, `CONNECTION_LIMIT_REACHED`, `LIMIT_REACHED`, `AI_LIMIT_REACHED` or `FEATURE_NOT_AVAILABLE`, the plan does not allow it and the agent is told not to retry.
-- API calls: every `POST` carries an `Idempotency-Key`. Reads, `PUT`, `DELETE` and the `POST` creates the API runs once per key (monitors, status pages, incident notes ...) are retried once, with the same key, after a network error, a timeout (30 seconds), HTTP 502/503/504 or 429 (honouring `Retry-After`, in seconds or as a date, up to 5 seconds; a longer wait is returned to the agent). Other `POST`s (acknowledge, resolve, pause, resume, run-check) are retried only on 429 (the API refused them before running them); after a network error, a timeout or a 5xx they are sent once and the error is returned to the agent, since a retry could run them twice. A network failure names its cause and host (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `CERT_*` ...); a response that is not JSON is an error. Calls carry `User-Agent` and `X-SutramX-Client: sutramx-mcp-server/<version>`.
+- API calls: every `POST` carries an `Idempotency-Key`. Reads (the read-only monitor `plan` included), `PUT`, `DELETE` and the `POST` creates the API runs once per key (monitors, status pages, incident notes ...) are retried once, with the same key, after a network error, a timeout (30 seconds), HTTP 502/503/504 or 429 (honouring `Retry-After`, in seconds or as a date, up to 5 seconds; a longer wait is returned to the agent). Other `POST`s (acknowledge, resolve, pause, resume, run-check) are retried only on 429 (the API refused them before running them); after a network error, a timeout or a 5xx they are sent once and the error is returned to the agent, since a retry could run them twice. A network failure names its cause and host (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `CERT_*` ...); a response that is not JSON is an error. Calls carry `User-Agent` and `X-SutramX-Client: sutramx-mcp-server/<version>`.
 - Billing, team members and API keys cannot be managed with an API key, and so not with this server. Per-monitor alert recipients (`config.notification_emails`) can only be set with an API key that has Automation access; other keys get a clear error.
 - Maintenance windows can be listed but not created, changed or deleted: they silence alerting, so the API makes them owner-only and refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`). SLO targets are set in the dashboard; `sutramx_uptime_report` reads them.
 - With a read-only key, `sutramx_whoami` reports `read_only: true`, and any write tool returns `READ_ONLY_ACCESS` with a hint telling the agent not to retry.

@@ -23,14 +23,14 @@ export function registerAccountTools(server: McpServer, client: SutramXClient): 
     }));
 
     server.registerTool('sutramx_list_regions', {
-        title: 'List probe regions',
-        description: 'Every SutramX probe location: code (use in a monitor\'s "regions"), city, country, continent and whether it is online. Which codes a monitor may use depends on the plan (see sutramx_whoami).',
+        title: 'List monitoring locations',
+        description: 'Every SutramX monitoring location: code (use in a monitor\'s "regions"), city, country, continent and whether it is online. Which codes a monitor may use depends on the plan (see sutramx_whoami).',
         inputSchema: { response_format: ResponseFormatSchema },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, safely(async ({ response_format }) => {
         const data = await client.get<{ regions: Region[]; }>('/catalog/regions', undefined, true);
         const regions = data.regions || [];
-        const markdown = [`# Probe regions (${regions.length})`, ...regions.map((region) => `- \`${region.code}\` ${region.name}${region.country ? `, ${region.country}` : ''}${region.online === false ? ' (offline)' : ''}`)].join('\n');
+        const markdown = [`# Monitoring locations (${regions.length})`, ...regions.map((region) => `- \`${region.code}\` ${region.name}${region.country ? `, ${region.country}` : ''}${region.online === false ? ' (offline)' : ''}`)].join('\n');
         return ok({ total: regions.length, regions }, markdown, response_format);
     }));
 }

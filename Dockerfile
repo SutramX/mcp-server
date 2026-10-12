@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Hosted SutramX MCP server: streamable HTTP at POST /mcp. Every request
 # carries the caller's own API key (Authorization: Bearer sk_...), so one
-# container serves every user. Deployed with backend/docker-compose.prod.yml
-# behind Caddy at https://api.sutramx.com/mcp.
+# container serves every user. The hosted instance answers at
+# https://api.sutramx.com/mcp.
 
 # ---------------------------------------------------------------------------
 # Build stage — needs devDependencies (typescript).

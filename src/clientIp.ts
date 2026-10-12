@@ -11,9 +11,9 @@ import { isIP } from 'node:net';
  * everyone out. Instead:
  *
  *  - TRUST_PROXY_HOPS (default 0) says how many reverse proxies in front of
- *    this server set X-Forwarded-For (Express `trust proxy`). Behind the
- *    SutramX Caddy it is 1: Caddy replaces X-Forwarded-For with the client
- *    address it determined (Cloudflare-aware). With 0 the TCP peer is used
+ *    this server set X-Forwarded-For (Express `trust proxy`). Behind one
+ *    reverse proxy that replaces X-Forwarded-For with the client address it
+ *    determined, it is 1. With 0 the TCP peer is used
  *    and forwarded headers are ignored.
  *  - Failed credentials (a malformed Authorization header, an OAuth token
  *    the API rejects, an API key the API rejects) are counted per address;
